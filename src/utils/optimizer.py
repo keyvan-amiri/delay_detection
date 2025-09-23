@@ -5,7 +5,8 @@ Created on Wed Sep 10 13:37:26 2025
 """
 import torch.optim as optim
 
-def get_opt_schedule(args, cfg, model, learning_rate):  
+def get_opt_schedule(args, cfg, model): 
+    learning_rate = args.lr
     optimizer_type = cfg[args.model]['optimizer']  
     eps = cfg[args.model]['eps']
     weight_decay = cfg[args.model]['weight_decay']

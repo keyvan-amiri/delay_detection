@@ -119,7 +119,6 @@ class DALSTM_preprocessing ():
         y_val = torch.tensor(y_val).type(torch.float)
         y_test = torch.tensor(y_test).type(torch.float)
         input_size = X_train.size(2)
-        max_len = X_train.size(1) 
         # save training, validation, test tensors
         torch.save(X_train, self.args.X_train_path)                  
         torch.save(X_val, self.args.X_val_path)
@@ -134,7 +133,5 @@ class DALSTM_preprocessing ():
             pickle.dump(test_cases, file)
         # save max_len, input_size to be used in the definition of model
         with open(self.args.input_size_path, 'wb') as file:
-            pickle.dump(input_size, file)
-        with open(self.args.max_len_path, 'wb') as file:
-            pickle.dump(max_len, file)        
+            pickle.dump(input_size, file)     
         print('Preprocessing is done for holdout data split.')

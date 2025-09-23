@@ -13,8 +13,7 @@ from tensorflow.keras.preprocessing import sequence
 def check_processed_tensors(args):
     file_list = [args.X_train_path, args.X_val_path, args.X_test_path, 
                  args.y_train_path, args.y_val_path, args.y_test_path,
-                 args.test_length_path, args.input_size_path, args.max_len_path]
-    
+                 args.test_length_path, args.input_size_path]    
     all_files_exist = all(os.path.exists(f) for f in file_list)
     return all_files_exist
 

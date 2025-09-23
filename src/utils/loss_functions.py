@@ -6,16 +6,14 @@ def set_loss(args):
     loss_func = args.loss
     if args.heteroscedastic:
         criterion = heteroscedastic_loss(metric=loss_func)
-    elif args.bmse:
-        criterion = bmc_loss
-    elif args.sera:
-        criterion = sera_loss
     else:
-        if loss_func == 'mae':
-            #criterion = nn.L1Loss()
+        if loss_func == 'bmse':
+            criterion = bmc_loss
+        elif loss_func == 'sera':
+            criterion = sera_loss
+        elif loss_func == 'mae':
             criterion = weighted_l1_loss
         elif loss_func == 'mse':
-            #criterion = nn.MSELoss()
             criterion = weighted_mse_loss
         elif loss_func == 'focal_mae':
             criterion = weighted_focal_l1_loss
@@ -84,11 +82,6 @@ def bmc_loss(pred, target, noise_var):
     return loss
 
 def sera_loss(preds, trues, phi_trues, step=0.001, norm=False):
-    """
-    Batch-wise SERA loss.
-    trues, preds, phi_trues: tensors of shape (batch,)
-    Returns: scalar SERA value
-    """
     device = trues.device
     th = torch.arange(0, 1 + step, step, device=device)  # [T]    
     # Expand for broadcasting
