@@ -30,7 +30,7 @@ def main():
     parser.add_argument('--cfg', default=None)
     parser.add_argument('--overwrite', action='store_true', default=False, 
                         help='Repeat preprocessing for an existing dataset')
-    parser.add_argument('--num_seeds', type=int, default=1)
+    parser.add_argument('--num_seeds', type=int, default=5)
     # TODO: add SMOTE-based approaches if necessary
     parser.add_argument('--IR', type=str, default='Vanilla',
                         choices=['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA'],
