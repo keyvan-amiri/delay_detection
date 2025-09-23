@@ -1,0 +1,35 @@
+data:
+  path: '/ceph/kamiriel/SNA4PPM/data'
+  format: xes
+  case_col: 'case:concept:name'
+  act_col: 'concept:name'
+  start_time: None
+  end_time: 'time:timestamp'
+  trans_col: 'lifecycle:transition'
+  res_col: 'org:group'
+  num_TS: 1
+  use_data_attributes: False
+  case_num_feat: []
+  case_cat_feat: []
+  event_num_feat: ['Age', 'Leucocytes', 'CRP', 'LacticAcid']
+  event_cat_feat: ['InfectionSuspected', 'org:group', 'DiagnosticBlood', 'DisfuncOrg', 'SIRSCritTachypnea', 'Hypotensie', 'SIRSCritHeartRate', 'Infusion', 'DiagnosticArtAstrup', 'DiagnosticIC', 'DiagnosticSputum', 'DiagnosticLiquor', 'DiagnosticOther', 'SIRSCriteria2OrMore', 'DiagnosticXthorax', 'SIRSCritTemperature', 'DiagnosticUrinaryCulture', 'SIRSCritLeucos', 'Oligurie', 'DiagnosticLacticAcid', 'Diagnose', 'Hypoxie', 'DiagnosticUrinarySediment', 'DiagnosticECG']
+  train_ratio: 0.8
+  val_ratio: 0.2
+  delay_thresh: 0.1
+DALSTM:
+  n_layers: 2
+  hidden_size: 150 
+  dropout: True
+  dropout_prob: 0.1
+  batch_size: 64
+  test_batch_size: 64
+  optimizer: NAdam
+  eps: 1e-7
+  weight_decay: 0.01 
+  max_epochs: 200
+  early_stop: True
+  patience: 30
+  min_delta: 0 
+  val_step: 5
+    
+  
