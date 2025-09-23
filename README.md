@@ -1,5 +1,9 @@
 # Imbalanced Regression for Remaining Time Prediction in Business Processes
 
+## Installation
+To install all packages please use imbalanced_regression.txt this include all packages required for experiments with DALSTM and PGTNet models. If we decided to not include PGTNet, we can remove unnecessary packages later. 
+
+## Running Experiments
 To execute the pipeline for a dataset (e.g., BPIC20PTC), a model (e.g., DALSTM) and a imbalanced regression technique (e.g., BMSE) run the following:
 
 ```
