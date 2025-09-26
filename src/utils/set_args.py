@@ -57,9 +57,11 @@ def handle_paths(args):
     args.train_id = os.path.join(args.process_path, train_id_name)
     args.val_id = os.path.join(args.process_path, val_id_name)
     args.test_id = os.path.join(args.process_path, test_id_name)
-    # DALSTM arguments
+    # DALSTM/PT arguments
     if args.model == 'DALSTM':
-        args = add_DALSTM_paths(args)    
+        args = add_DALSTM_paths(args)
+    elif args.model == 'PT':
+        args = add_PT_paths(args)
     return args
 
 def add_DALSTM_paths(args):
@@ -86,6 +88,36 @@ def add_DALSTM_paths(args):
     # TODO: remove this part
     #args.max_len_path = os.path.join(
         #args.process_path, "DALSTM_max_len_"+args.dataset+".pkl")  
+    return args
+
+def add_PT_paths(args):
+    # tensors for PT: token seqs, time features, targets
+    args.Xtok_train_path = os.path.join(
+        args.process_path, "PT_Xtok_train_"+args.dataset+".pt")
+    args.Xtok_val_path = os.path.join(
+        args.process_path, "PT_Xtok_val_"+args.dataset+".pt")
+    args.Xtok_test_path = os.path.join(
+        args.process_path, "PT_Xtok_test_"+args.dataset+".pt")
+    args.Xtime_train_path = os.path.join(
+        args.process_path, "PT_Xtime_train_"+args.dataset+".pt")
+    args.Xtime_val_path = os.path.join(
+        args.process_path, "PT_Xtime_val_"+args.dataset+".pt")
+    args.Xtime_test_path = os.path.join(
+        args.process_path, "PT_Xtime_test_"+args.dataset+".pt")
+    args.y_train_path = os.path.join(
+        args.process_path, "PT_y_train_"+args.dataset+".pt")
+    args.y_val_path = os.path.join(
+        args.process_path, "PT_y_val_"+args.dataset+".pt")
+    args.y_test_path = os.path.join(
+        args.process_path, "PT_y_test_"+args.dataset+".pt")
+    args.test_length_path = os.path.join(
+        args.process_path, "PT_test_length_list_"+args.dataset+".pkl")
+    args.test_cases_path = os.path.join(
+        args.process_path, "PT_test_cases_"+args.dataset+".pkl")
+    args.vocab_size_path = os.path.join(
+        args.process_path, "PT_vocab_size_"+args.dataset+".pkl")
+    args.max_len_path = os.path.join(
+        args.process_path, "PT_max_len_"+args.dataset+".pkl")
     return args
 
 def handle_experiment(args, exp_str):

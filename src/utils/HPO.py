@@ -13,9 +13,9 @@ def get_hpo_params(args):
     if args.IR == 'Vanilla':
         weight_sp = {"name": "reweight", "type": "fixed", "value": "none",
                      'value_type': 'str'}
-        if args.model == 'DALSTM':
-            loss_sp = {"name": "loss_func", "type": "fixed", "value": "mae",
-                       'value_type': 'str'}
+        # Use MAE for Vanilla across models (DALSTM, PT)
+        loss_sp = {"name": "loss_func", "type": "fixed", "value": "mae",
+                   'value_type': 'str'}
     elif args.IR == 'CSW':
         weight_sp = {"name": "reweight", "type": "choice",
                      "values": ["sqrt_inv", "inverse"], 'value_type': 'str'}

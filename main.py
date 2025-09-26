@@ -18,6 +18,7 @@ from src.utils.import_log import get_event_log
 from src.utils.pipeline import conduct_HPO, train_evaluate_best_model
 #from src.utils.case_durations import get_case_duration, analyze_delays
 from src.LSTM.Preprocess_DALSTM import DALSTM_preprocessing
+from src.Process_Transformer.Preprocess_PT import PT_preprocessing
 
 
 def main():
@@ -47,7 +48,9 @@ def main():
     log, log_ids = get_event_log(args, cfg)
     # training and inference pipeline
     if args.model == 'DALSTM':
-        DALSTM_preprocessing (log, log_ids, args, overwrite=args.overwrite) 
+        DALSTM_preprocessing (log, log_ids, args, overwrite=args.overwrite)
+    elif args.model == 'PT':
+        PT_preprocessing (log, log_ids, args, overwrite=args.overwrite)
     ovarall_result_name = args.dataset+'_'+args.model+'_overall_results.pkl'
     ovarall_result_path = os.path.join(args.result_path, ovarall_result_name)
     if os.path.exists(ovarall_result_path):

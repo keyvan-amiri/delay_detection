@@ -13,6 +13,9 @@ from src.utils.HPO import get_hpo_client
 from src.utils.optimizer import get_opt_schedule
 from src.LSTM.load_dataset import load_DALSTM_data, get_train_params
 from src.LSTM.model_DALSTM import get_DALSTM_model
+from src.Process_Transformer.load_dataset import load_PT_data, get_train_params_PT
+from src.Process_Transformer.model_PT import get_PT_model
+from src.Process_Transformer.Train_PT import train_epoch_PT, validate_epoch_PT, PT_inference
 from src.utils.loss_functions import set_loss
 from src.LSTM.Train_DALSTM import train_epoch, validate_epoch, DALSTM_inference
 from src.utils.utils import add_shots
@@ -54,6 +57,11 @@ def conduct_HPO(args, cfg, seed=None, logger=None):
              ) = get_train_params(cfg)
             # define model, and FDS configuration
             model, fds_config = get_DALSTM_model(args, cfg, device)
+        elif args.model == 'PT':
+            (train_loader, val_loader, _, _, _, _) = load_PT_data(args, cfg)
+            (num_epochs, early_stop, early_patience, min_delta
+             ) = get_train_params_PT(cfg)
+            model, fds_config = get_PT_model(args, cfg, device)
         # define loss function
         criterion = set_loss(args)     
         # Train with these parameters
@@ -93,13 +101,24 @@ def train_with_hyperparams(
                 model, train_loader, criterion, optimizer, epoch, bmse=bmse,
                 fds_model=fds_model, heteroscedastic=heteroscedastic,
                 clip_grad_norm=clip_grad_norm, clip_value=clip_value,
-                fds_config=fds_config, device=device) 
+                fds_config=fds_config, device=device)
+        elif args.model == 'PT':
+            loss = train_epoch_PT(
+                model, train_loader, criterion, optimizer, epoch,
+                bmse=bmse, fds_model=fds_model, heteroscedastic=heteroscedastic,
+                clip_grad_norm=clip_grad_norm, clip_value=clip_value,
+                fds_config=fds_config, device=device)
         if (epoch + 1) % val_step == 0:
             if args.model == 'DALSTM':
                 average_valid_loss = validate_epoch(
                     model, val_loader, criterion, epoch, bmse=bmse,
                     fds_model=fds_model, heteroscedastic=heteroscedastic,
                     device=device)   
+            elif args.model == 'PT':
+                average_valid_loss = validate_epoch_PT(
+                    model, val_loader, criterion, epoch,
+                    bmse=bmse, fds_model=fds_model, heteroscedastic=heteroscedastic,
+                    device=device)
             print(f'Epoch {epoch + 1}/{num_epochs},', 
                   f'Loss: {loss.item()}, Validation Loss: {average_valid_loss}')
             if logger is not None:
@@ -140,6 +159,12 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
          ) = get_train_params(cfg)
         # define model, and FDS configuration
         model, fds_config = get_DALSTM_model(args, cfg, device)
+    elif args.model == 'PT':
+        (train_loader, val_loader, test_loader, test_lengths, test_cases,
+         relevance_test) = load_PT_data(args, cfg)
+        (num_epochs, early_stop, early_patience, min_delta
+         ) = get_train_params_PT(cfg)
+        model, fds_config = get_PT_model(args, cfg, device)
     # define loss function
     criterion = set_loss(args)  
     # start training
@@ -158,12 +183,23 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
                 fds_model=fds_model, heteroscedastic=heteroscedastic,
                 clip_grad_norm=clip_grad_norm, clip_value=clip_value,
                 fds_config=fds_config, device=device)
+        elif args.model == 'PT':
+            loss = train_epoch_PT(
+                model, train_loader, criterion, optimizer, epoch,
+                bmse=bmse, fds_model=fds_model, heteroscedastic=heteroscedastic,
+                clip_grad_norm=clip_grad_norm, clip_value=clip_value,
+                fds_config=fds_config, device=device)
         if (epoch + 1) % val_step == 0:
             if args.model == 'DALSTM':
                 average_valid_loss = validate_epoch(
                     model, val_loader, criterion, epoch, bmse=bmse,
                     fds_model=fds_model, heteroscedastic=heteroscedastic,
                     device=device)   
+            elif args.model == 'PT':
+                average_valid_loss = validate_epoch_PT(
+                    model, val_loader, criterion, epoch,
+                    bmse=bmse, fds_model=fds_model, heteroscedastic=heteroscedastic,
+                    device=device)
             print(f'Epoch {epoch + 1}/{num_epochs},', 
                   f'Loss: {loss.item()}, Validation Loss: {average_valid_loss}')
             if logger is not None:
@@ -213,10 +249,15 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    all_results = DALSTM_inference(
-        model, checkpoint, inference_loader, all_results, test_lengths,
-        test_cases, bmse=bmse, fds_model=fds_model,
-        heteroscedastic=heteroscedastic, val_mode=val_mode, device=device)
+    if args.model == 'DALSTM':
+        all_results = DALSTM_inference(
+            model, checkpoint, inference_loader, all_results, test_lengths,
+            test_cases, bmse=bmse, fds_model=fds_model,
+            heteroscedastic=heteroscedastic, val_mode=val_mode, device=device)
+    elif args.model == 'PT':
+        all_results = PT_inference(
+            model, checkpoint, inference_loader, all_results, test_lengths,
+            test_cases, val_mode=val_mode, device=device)
     inference_time = (datetime.now()-start).total_seconds()
     if not val_mode:
         # inference time is reported in milliseconds.
