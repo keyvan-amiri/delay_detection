@@ -54,9 +54,9 @@ def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):
         # Load data and define training parameters
         if args.model == 'DALSTM':
             if args.IR == 'GMM':
-                (train_loader, val_loader, _, _, _, _) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
+                (train_loader, val_loader, _, _, _, _, _) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
             else:
-                (train_loader, val_loader, _, _, _, _) = load_DALSTM_data(args, cfg)
+                (train_loader, val_loader, _, _, _, _, _) = load_DALSTM_data(args, cfg)
             (num_epochs, early_stop, early_patience, min_delta
              ) = get_train_params(cfg)
             # define model, and FDS configuration
@@ -149,10 +149,10 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     if args.model == 'DALSTM':
         if args.IR == 'GMM':
             (train_loader, val_loader, test_loader, test_lengths, test_cases,
-             relevance_test) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
+             relevance_val, relevance_test) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
         else:
             (train_loader, val_loader, test_loader, test_lengths, test_cases,
-             relevance_test) = load_DALSTM_data(args, cfg)
+             relevance_val, relevance_test) = load_DALSTM_data(args, cfg)
         (num_epochs, early_stop, early_patience, min_delta
          ) = get_train_params(cfg)
         # define model, and FDS configuration

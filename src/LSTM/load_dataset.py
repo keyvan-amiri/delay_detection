@@ -49,16 +49,17 @@ def load_DALSTM_data(args, cfg, gmm_label=None):
             X=torch.cat([X_train, X_val], dim=0),
             y=y_train_val, args=args)
         trainval_weights = train_val_dataset.weights
-        labels_trainval = y_train_val.cpu().numpy()
         train_weights = trainval_weights[:len(y_train)]
-        val_weights = trainval_weights[len(y_train):]
-        # Create train/val/test datasets
+        val_weights   = trainval_weights[len(y_train):]
         train_dataset = DALSTM_dataset(X_train, y_train, weights=train_weights)
-        val_dataset = DALSTM_dataset(X_val, y_val, weights=val_weights)
+        val_dataset   = DALSTM_dataset(X_val, y_val, weights=val_weights)
+        # Use the same binning rule for test
+        bin_edges   = train_val_dataset.bin_edges      # store these in the dataset
+        bin_weights = train_val_dataset.bin_weights    # per-bin weights
         test_dataset = DALSTM_dataset(
             X_test, y_test,
-            labels_trainval=labels_trainval,
-            trainval_weights=trainval_weights)
+            bin_edges=bin_edges,
+            trainval_bin_weights=bin_weights)
     batch_size = cfg['DALSTM']['batch_size']
     test_batch_size = cfg['DALSTM']['test_batch_size']  
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -69,7 +70,7 @@ def load_DALSTM_data(args, cfg, gmm_label=None):
         idx = mask.nonzero(as_tuple=True)[0].tolist()
         test_lengths = [test_lengths[i] for i in idx]
         test_cases   = [test_cases[i] for i in idx]
-    return (train_loader, val_loader, test_loader, test_lengths, test_cases, relevance_test)
+    return (train_loader, val_loader, test_loader, test_lengths, test_cases, relevance_val, relevance_test)
 
 def load_data(args):
     X_train = torch.load(args.X_train_path, weights_only=True)
