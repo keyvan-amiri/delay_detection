@@ -4,6 +4,7 @@ Created on Tue Sep  9 13:29:04 2025
 @author: Keyvan Amiri Elyasi
 """
 import pandas as pd
+import numpy as np
 
 def add_shots(df_inp, trg_col="GroundTruth",
               many_threshold=0.6, med_threshold=0.3):
@@ -60,6 +61,21 @@ def results_to_dataframe(results_dict):
         rows.append(row)
     
     return pd.DataFrame(rows)
+
+
+
+def weighted_metrics(metric_lst, gmm_freq_lst):
+    w = np.asarray(gmm_freq_lst, dtype=float)
+    w = w / w.sum()
+    keys = metric_lst[0].keys()
+    out = {}
+    for k in keys:
+        means = np.array([d[k][0] for d in metric_lst], dtype=float)
+        stds  = np.array([d[k][1] for d in metric_lst], dtype=float)
+
+        out[k] = (np.sum(w * means), np.sum(w * stds))  # weighted mean, weighted std (as you stored it)
+    return out
+
 
     
 

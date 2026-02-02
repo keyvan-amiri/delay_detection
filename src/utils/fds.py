@@ -8,17 +8,51 @@ import torch.nn.functional as F
 
 #print = logging.info
 
-def calibrate_mean_var(matrix, m1, v1, m2, v2, clip_min=0.1, clip_max=10):
+def calibrate_mean_var(
+    matrix, m1, v1, m2, v2,
+    clip_min=0.1, clip_max=10.0,
+    eps=1e-6
+    ):
+    # If variance is basically zero everywhere, do nothing
     if torch.sum(v1) < 1e-10:
         return matrix
+    # Ensure same dtype/device behavior
+    v1_safe = torch.clamp(v1, min=eps)
+    v2_safe = torch.clamp(v2, min=eps)
+    # Compute per-dimension scale
+    factor = torch.clamp(v2_safe / v1_safe, clip_min, clip_max)
+    scale = torch.sqrt(factor)
+    # If some dims originally had exactly zero variance, keep them unchanged
     if (v1 == 0.).any():
         valid = (v1 != 0.)
-        factor = torch.clamp(v2[valid] / v1[valid], clip_min, clip_max)
-        matrix[:, valid] = (matrix[:, valid] - m1[valid]) * torch.sqrt(factor) + m2[valid]
-        return matrix
+        # Build output without in-place assignment
+        transformed = (matrix - m1) * scale + m2
+        # Keep invalid (zero-var) dims as original
+        valid_mask = valid.unsqueeze(0).expand_as(matrix)
+        return torch.where(valid_mask, transformed, matrix)
+    # Normal case
+    return (matrix - m1) * scale + m2
 
-    factor = torch.clamp(v2 / v1, clip_min, clip_max)
-    return (matrix - m1) * torch.sqrt(factor) + m2
+def add_bin_edges(model, train_loader, val_loader, fds_config, device):
+    # Collect continuous labels from train + val
+    y_all = []
+    for _, y, _ in train_loader:
+        y_all.append(y.detach().cpu().float().view(-1))
+    for _, y, _ in val_loader:
+        y_all.append(y.detach().cpu().float().view(-1))
+    y_all = torch.cat(y_all, dim=0)  # (N,)
+    bucket_start = fds_config["bucket_start"]
+    bucket_num = fds_config["bucket_num"]
+    num_bins = bucket_num - bucket_start
+    q = torch.linspace(0, 1, steps=num_bins + 1)
+    bin_edges = torch.quantile(y_all, q)  # (num_bins+1,)
+    # Ensure strictly increasing edges (handles duplicate quantiles)
+    eps = 1e-6
+    for i in range(1, bin_edges.numel()):
+        if bin_edges[i] <= bin_edges[i - 1]:
+            bin_edges[i] = bin_edges[i - 1] + eps
+    model.set_fds_bin_edges(bin_edges.to(device))
+    return model
 
 class FDS(nn.Module):
 
@@ -95,6 +129,8 @@ class FDS(nn.Module):
     def update_running_stats(self, features, labels, epoch):
         if epoch < self.epoch:
             return
+        if labels.dim() == 2:
+            labels = labels.squeeze(1)  # <-- FIX: make labels shape (N,)
 
         assert self.feature_dim == features.size(1), "Input feature dimension is not aligned!"
         assert features.size(0) == labels.size(0), "Dimensions of features and labels are not aligned!"
@@ -124,32 +160,46 @@ class FDS(nn.Module):
         print(f"Updated running statistics with Epoch [{epoch}] features!")
 
     def smooth(self, features, labels, epoch):
+        """
+        Autograd-safe, out-of-place smoothing.
+        Avoids: features[mask] = ...
+        """
         if epoch < self.start_smooth:
             return features
 
-        labels = labels.squeeze(1)
-        for label in torch.unique(labels):
-            if label > self.bucket_num - 1 or label < self.bucket_start:
+        # labels expected shape: (B,) or (B,1)
+        if labels.dim() == 2:
+            labels = labels.squeeze(1)
+
+        out = features.clone()
+        unique_labels = torch.unique(labels)
+        for lab in unique_labels:
+            lab_i = int(lab.item())  # safe Python int for indexing
+            if lab_i > self.bucket_num - 1 or lab_i < self.bucket_start:
                 continue
-            elif label == self.bucket_start:
-                features[labels <= label] = calibrate_mean_var(
-                    features[labels <= label],
-                    self.running_mean_last_epoch[int(label - self.bucket_start)],
-                    self.running_var_last_epoch[int(label - self.bucket_start)],
-                    self.smoothed_mean_last_epoch[int(label - self.bucket_start)],
-                    self.smoothed_var_last_epoch[int(label - self.bucket_start)])
-            elif label == self.bucket_num - 1:
-                features[labels >= label] = calibrate_mean_var(
-                    features[labels >= label],
-                    self.running_mean_last_epoch[int(label - self.bucket_start)],
-                    self.running_var_last_epoch[int(label - self.bucket_start)],
-                    self.smoothed_mean_last_epoch[int(label - self.bucket_start)],
-                    self.smoothed_var_last_epoch[int(label - self.bucket_start)])
+            bucket_idx = lab_i - self.bucket_start
+            # Skip buckets with too few samples tracked (unstable stats)
+            min_count = 20
+            if self.num_samples_tracked[bucket_idx] < min_count:
+                continue
+            # Build mask for the three boundary cases (same as your original logic)
+            if lab_i == self.bucket_start:
+                mask = (labels <= lab_i)
+            elif lab_i == self.bucket_num - 1:
+                mask = (labels >= lab_i)
             else:
-                features[labels == label] = calibrate_mean_var(
-                    features[labels == label],
-                    self.running_mean_last_epoch[int(label - self.bucket_start)],
-                    self.running_var_last_epoch[int(label - self.bucket_start)],
-                    self.smoothed_mean_last_epoch[int(label - self.bucket_start)],
-                    self.smoothed_var_last_epoch[int(label - self.bucket_start)])
-        return features
+                mask = (labels == lab_i)
+
+            if not mask.any():
+                continue            
+            # Calibrate ALL rows, then select only masked rows via torch.where
+            # (This avoids needing to slice-assign into out.)
+            calibrated = calibrate_mean_var(
+                out,
+                self.running_mean_last_epoch[bucket_idx],
+                self.running_var_last_epoch[bucket_idx],
+                self.smoothed_mean_last_epoch[bucket_idx],
+                self.smoothed_var_last_epoch[bucket_idx],
+                )
+            out = torch.where(mask.unsqueeze(1), calibrated, out)
+        return out

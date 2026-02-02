@@ -6,12 +6,13 @@ Created on Tue Sep  9 13:29:37 2025
 import os
 import logging
 import random
+import torch
 
 
 def define_experiments(args):
     args.bmse = False
     args.sera = False
-    if args.IR in {'Vanilla'}:
+    if args.IR in {'Vanilla', 'GMM'}:
         exp_ids = [1]
         smooth_str = ['wos']
     elif args.IR in {'CSW', 'EAL'}:
@@ -36,7 +37,6 @@ def add_arguments(args, cfg):
     # data split arguments
     args.train_ratio = cfg['data']['train_ratio']
     args.val_ratio = cfg['data']['val_ratio']
-
     # delay threshold (e.g., 10% of cases with longest durations)
     args.delay_thresh = cfg['data']['delay_thresh']
     return args      
@@ -76,6 +76,13 @@ def add_DALSTM_paths(args):
         args.process_path, "DALSTM_y_val_"+args.dataset+".pt")
     args.y_test_path = os.path.join(
         args.process_path, "DALSTM_y_test_"+args.dataset+".pt")
+    # GMM labels for two-step approach
+    args.z_train_path = os.path.join(
+        args.process_path, "DALSTM_z_train_"+args.dataset+".pt")
+    args.z_val_path = os.path.join(
+        args.process_path, "DALSTM_z_val_"+args.dataset+".pt")
+    args.z_test_path = os.path.join(
+        args.process_path, "DALSTM_z_test_"+args.dataset+".pt")
     # save length of the prefixes in the test set
     args.test_length_path = os.path.join(
         args.process_path, "DALSTM_test_length_list_"+args.dataset+".pkl")  
@@ -83,9 +90,6 @@ def add_DALSTM_paths(args):
         args.process_path, "DALSTM_test_cases_"+args.dataset+".pkl")
     args.input_size_path = os.path.join(
         args.process_path, "DALSTM_input_size_"+args.dataset+".pkl")
-    # TODO: remove this part
-    #args.max_len_path = os.path.join(
-        #args.process_path, "DALSTM_max_len_"+args.dataset+".pkl")  
     return args
 
 def handle_experiment(args, exp_str):
@@ -124,3 +128,14 @@ def get_logger(args):
     file_handler_par.setFormatter(formatter)
     logger_par.addHandler(file_handler_par)
     return logger_par
+
+def get_num_component(args):   
+    if args.IR == 'GMM':
+        z_test = torch.load(args.z_test_path, weights_only=True)
+        distinct_labels_tensor, counts = torch.unique(z_test, return_counts=True)
+        distinct_labels = distinct_labels_tensor.tolist()
+        gmm_freq_lst = (counts.float() / z_test.numel()).tolist()
+    else:
+        distinct_labels = None
+        gmm_freq_lst = [1.0]
+    return gmm_freq_lst, distinct_labels

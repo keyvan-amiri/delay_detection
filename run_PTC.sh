@@ -16,3 +16,5 @@ export METHOD=BMSE
 python main.py --dataset ${DATASET} --model ${MODEL} --IR ${METHOD}
 export METHOD=SERA
 python main.py --dataset ${DATASET} --model ${MODEL} --IR ${METHOD}
+export METHOD=GMM
+python main.py --dataset ${DATASET} --model ${MODEL} --IR ${METHOD}

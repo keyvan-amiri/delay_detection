@@ -17,6 +17,7 @@ from src.utils.loss_functions import set_loss
 from src.LSTM.Train_DALSTM import train_epoch, validate_epoch, DALSTM_inference
 from src.utils.utils import add_shots
 from src.utils.loss_functions import sera_loss
+from src.utils.fds import add_bin_edges
 
 def update_args(args, cfg, parameters):
     args.lr = parameters.get("lr")
@@ -28,13 +29,16 @@ def update_args(args, cfg, parameters):
     args.fds_kernel = parameters.get("fds_kernel")
     args.fds_ks = parameters.get("fds_ks")
     args.fds_sigma = parameters.get("fds_sigma")
+    args.fds_bucket_num = cfg.get('imbalanced', {}).get('fds_bucket_num', 50)
+    args.fds_bucket_start = cfg.get('imbalanced', {}).get('fds_bucket_start', 0)
     args.fds_start_update = cfg.get('imbalanced', {}).get('fds_start_update', 0)
-    args.fds_start_smooth = cfg.get('imbalanced', {}).get('fds_start_smooth', 1)
+    args.fds_start_smooth = cfg.get('imbalanced', {}).get('fds_start_smooth', 1)    
     args.extreme_type = parameters.get("extreme_type")
     args.asym = parameters.get("asym")   
-    return args
+    return args   
+    
 
-def conduct_HPO(args, cfg, seed=None, logger=None):  
+def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):  
     # set device
     device = f'cuda:{os.environ.get("CUDA_VISIBLE_DEVICES", "0")}' if torch.cuda.is_available() else 'cpu'
     # define HPO AX client
@@ -49,11 +53,17 @@ def conduct_HPO(args, cfg, seed=None, logger=None):
         args = update_args(args, cfg, parameters)      
         # Load data and define training parameters
         if args.model == 'DALSTM':
-            (train_loader, val_loader, _, _, _, _) = load_DALSTM_data(args, cfg)
+            if args.IR == 'GMM':
+                (train_loader, val_loader, _, _, _, _) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
+            else:
+                (train_loader, val_loader, _, _, _, _) = load_DALSTM_data(args, cfg)
             (num_epochs, early_stop, early_patience, min_delta
              ) = get_train_params(cfg)
             # define model, and FDS configuration
             model, fds_config = get_DALSTM_model(args, cfg, device)
+            # Bucketize labels for FDS
+            if args.FDS:
+                model = add_bin_edges(model, train_loader, val_loader, fds_config, device)
         # define loss function
         criterion = set_loss(args)     
         # Train with these parameters
@@ -120,7 +130,7 @@ def train_with_hyperparams(
 
 def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
                               clip_grad_norm=False, clip_value=None,
-                              val_mode=False):
+                              val_mode=False, gmm_label=None):
     ##########################################################################
     # Train
     ##########################################################################
@@ -128,18 +138,28 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     # set device
     device = f'cuda:{os.environ.get("CUDA_VISIBLE_DEVICES", "0")}' if torch.cuda.is_available() else 'cpu'
     # set checkpoint path
-    checkpoint_name = args.model_name+'seed'+str(seed)+'.pt'
+    if args.IR == 'GMM':
+        checkpoint_name = args.model_name+'gmm'+str(gmm_label)+'_seed'+str(seed)+'.pt'
+    else:
+        checkpoint_name = args.model_name+'seed'+str(seed)+'.pt'
     checkpoint_path = os.path.join(args.process_path, checkpoint_name)
     # set to the best hyper-parameters
     args = update_args(args, cfg, best_params)
     # Load data and define training parameters
     if args.model == 'DALSTM':
-        (train_loader, val_loader, test_loader, test_lengths, test_cases,
-         relevance_test) = load_DALSTM_data(args, cfg)
+        if args.IR == 'GMM':
+            (train_loader, val_loader, test_loader, test_lengths, test_cases,
+             relevance_test) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
+        else:
+            (train_loader, val_loader, test_loader, test_lengths, test_cases,
+             relevance_test) = load_DALSTM_data(args, cfg)
         (num_epochs, early_stop, early_patience, min_delta
          ) = get_train_params(cfg)
         # define model, and FDS configuration
         model, fds_config = get_DALSTM_model(args, cfg, device)
+        # Bucketize labels for FDS
+        if args.FDS:
+            model = add_bin_edges(model, train_loader, val_loader, fds_config, device)
     # define loss function
     criterion = set_loss(args)  
     # start training
@@ -232,12 +252,18 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
         #print(f"{key}: {len(value)}")
     results_df = pd.DataFrame(all_results)
     if val_mode:
-        res_name = args.model_name+'seed'+str(seed)+'_inference_validation.csv'
+        if args.IR == 'GMM':
+            res_name = args.model_name+'gmm'+str(gmm_label)+'_seed'+str(seed)+'_inference_validation.csv'
+        else:
+            res_name = args.model_name+'seed'+str(seed)+'_inference_validation.csv'
         res_path = os.path.join(args.process_path, res_name)
     else:
         cols = ['Case_id', 'Prefix_length'] + [c for c in results_df.columns if c not in ['Case_id', 'Prefix_length']]
         results_df = results_df[cols]
-        res_name = args.model_name+'seed'+str(seed)+'_inference.csv'        
+        if args.IR == 'GMM':
+            res_name = args.model_name+'gmm'+str(gmm_label)+'_seed'+str(seed)+'_inference.csv'
+        else:
+            res_name = args.model_name+'seed'+str(seed)+'_inference.csv'        
         res_path = os.path.join(args.result_path, res_name)  
         results_df.to_csv(res_path, index=False)
     MAE = results_df["Absolute_error"].mean()

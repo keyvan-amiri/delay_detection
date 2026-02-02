@@ -4,68 +4,73 @@ import torch.nn.functional as F
 
 from torch.nn.utils import clip_grad_value_
 
-def train_epoch(model, train_loader, criterion, optimizer, epoch, 
+def train_epoch(model, train_loader, criterion, optimizer, epoch,
                 bmse=False, fds_model=False, heteroscedastic=False,
-                clip_grad_norm=False, clip_value=None, fds_config=None, 
+                clip_grad_norm=False, clip_value=None, fds_config=None,
                 device=None):
     model.train()
     if fds_model:
-        # Collect all features and labels from every batch (only for FDS)
         all_features = []
-        all_labels = []
+        all_labels_bucket = []   # <-- bucket IDs only for FDS
     for batch in train_loader:
-        # Forward pass
         inputs = batch[0].to(device)
-        targets = batch[1].to(device)
+        targets = batch[1].to(device)   # continuous y (keep as-is)
         weights = batch[2].to(device)
-        optimizer.zero_grad() # Resets the gradients
-        # forward pass
+        optimizer.zero_grad()
+
         if fds_model and bmse:
-            batch_results = model(inputs, targets, epoch)    
+            batch_results = model(inputs, targets, epoch)
             mean = batch_results['preds_mu']
             log_var = batch_results['preds_logvar']
             noise_var = log_var.exp()
-            mean = mean.view(-1, 1)
-            targets = targets.view(-1, 1)
-            noise_var = noise_var.view(-1, 1)
-            loss = criterion(mean, targets, noise_var)
-            batch_features = batch_results['features'].detach().cpu()
-            batch_labels = targets.view(-1).cpu()
+            mean_2d = mean.view(-1, 1)
+            targets_2d = targets.view(-1, 1)
+            noise_var_2d = noise_var.view(-1, 1)
+            loss = criterion(mean_2d, targets_2d, noise_var_2d)
+            # Collect features + BUCKET labels for FDS stats
+            batch_features = batch_results['features'].detach()
+            batch_labels_bucket = model.bucketize_for_fds(targets).detach()
             all_features.append(batch_features)
-            all_labels.append(batch_labels)
+            all_labels_bucket.append(batch_labels_bucket)
         elif heteroscedastic or bmse:
             mean, log_var = model(inputs)
             if heteroscedastic:
-                loss = criterion(mean, targets, log_var) 
+                loss = criterion(mean, targets, log_var)
             else:
                 noise_var = log_var.exp()
-                mean = mean.view(-1, 1)
-                targets = targets.view(-1, 1)
-                noise_var = noise_var.view(-1, 1)
-                loss = criterion(mean, targets, noise_var) 
+                mean_2d = mean.view(-1, 1)
+                targets_2d = targets.view(-1, 1)
+                noise_var_2d = noise_var.view(-1, 1)
+                loss = criterion(mean_2d, targets_2d, noise_var_2d)
         elif fds_model:
             batch_results = model(inputs, targets, epoch)
             outputs = batch_results['preds']
             loss = criterion(outputs, targets, weights)
-            batch_features = batch_results['features'].detach().cpu()                
-            batch_labels = targets.cpu()
+            # Collect features + BUCKET labels for FDS stats
+            batch_features = batch_results['features'].detach()
+            batch_labels_bucket = model.bucketize_for_fds(targets).detach()
             all_features.append(batch_features)
-            all_labels.append(batch_labels)
+            all_labels_bucket.append(batch_labels_bucket)
         else:
             outputs = model(inputs)
-            loss = criterion(outputs, targets, weights)  
-        # Backward pass and optimization
+            loss = criterion(outputs, targets, weights)
+
         loss.backward()
-        if clip_grad_norm: # if True: clips gradient at specified value
+        if clip_grad_norm:
             clip_grad_value_(model.parameters(), clip_value=clip_value)
-        optimizer.step()  
-    # update FDS statistics after each training epoch
+        optimizer.step()
+
+    # Update FDS statistics after each epoch (use bucket IDs!)
     if fds_model and epoch >= fds_config['start_update']:
-        training_features = torch.cat(all_features, dim=0).to(device)
-        training_labels = torch.cat(all_labels, dim=0).to(device)
+        training_features = torch.cat(all_features, dim=0)
+        training_labels_bucket = torch.cat(all_labels_bucket, dim=0)
+        # Match FDS expected shape: (N,1) then it squeezes to (N,)
         model.FDS.update_last_epoch_stats(epoch)
-        model.FDS.update_running_stats(training_features, training_labels, epoch)        
+        model.FDS.update_running_stats(
+            training_features, training_labels_bucket.unsqueeze(1), epoch
+        )
     return loss
+
 
 def validate_epoch(model, val_loader, criterion, epoch, 
                    bmse=False, fds_model=False, heteroscedastic=False,

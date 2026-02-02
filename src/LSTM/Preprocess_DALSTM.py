@@ -13,6 +13,8 @@ from src.LSTM.Load_DALSTM import dalstm_load_dataset
 from src.LSTM.Load_DALSTM import pad_arrays, normalize_tensors
 from src.LSTM.Load_DALSTM import remove_small_values, check_processed_tensors
 from src.utils.case_durations import expand_case_ids
+from src.utils.GMM import fit_label_gmm
+from src.utils.GMM import train_lstm_and_predict_test_components
 
 
 class DALSTM_preprocessing ():      
@@ -126,12 +128,33 @@ class DALSTM_preprocessing ():
         torch.save(y_train, self.args.y_train_path)
         torch.save(y_val, self.args.y_val_path)
         torch.save(y_test, self.args.y_test_path)
+        print('shape of features:', X_train.shape)
+        print('shape of labels:', y_train.shape)
         # save test prefix lengths, and test case ids
         with open(self.args.test_length_path, 'wb') as file:
             pickle.dump(test_lengths, file)
         with open(self.args.test_cases_path, 'wb') as file:
             pickle.dump(test_cases, file)
-        # save max_len, input_size to be used in the definition of model
+        # save input_size to be used in the definition of model
         with open(self.args.input_size_path, 'wb') as file:
-            pickle.dump(input_size, file)     
-        print('Preprocessing is done for holdout data split.')
+            pickle.dump(input_size, file) 
+        # Apply mixture of Gaussian to remaining time prediction (two-step approach)
+        z_train, z_val = fit_label_gmm(y_train, y_val)
+        z_test, _, _ = train_lstm_and_predict_test_components(
+            X_train, X_val, X_test, z_train, z_val, y_test)
+        # get statistics
+        num_comp = int(max(z_train.max(), z_val.max()).item()) + 1
+        train_freq = torch.bincount(z_train.view(-1), minlength=num_comp).float() / z_train.numel()
+        val_freq   = torch.bincount(z_val.view(-1),   minlength=num_comp).float() / z_val.numel()
+        test_freq   = torch.bincount(z_test.view(-1),   minlength=num_comp).float() / z_test.numel()
+        train_means = torch.stack([y_train[z_train == c].mean() for c in range(num_comp)])
+        val_means = torch.stack([y_val[z_val == c].mean() for c in range(num_comp)])
+        test_means = torch.stack([y_test[z_test == c].mean() for c in range(num_comp)])
+        print("GMM statistics")
+        print("Train- frequency:", train_freq.tolist(), "mean:", train_means)
+        print("Val- frequency:", val_freq.tolist(), "mean:", val_means)
+        print("Test- frequency:", test_freq.tolist(), "mean:", test_means)
+        torch.save(z_train, self.args.z_train_path)
+        torch.save(z_val, self.args.z_val_path)
+        torch.save(z_test, self.args.z_test_path)
+        print('Preprocessing is done.')

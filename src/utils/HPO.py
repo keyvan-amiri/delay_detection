@@ -10,7 +10,7 @@ def get_hpo_params(args):
     # learning rate search space
     lr_sp = {"name": "lr", "type": "range", "bounds": [1e-5, 1e-2], 
              "value_type": "float", "log_scale": True}    
-    if args.IR == 'Vanilla':
+    if args.IR in {'Vanilla', 'GMM'}:
         weight_sp = {"name": "reweight", "type": "fixed", "value": "none",
                      'value_type': 'str'}
         if args.model == 'DALSTM':
@@ -42,7 +42,7 @@ def get_hpo_params(args):
         asym_sp = {"name": "asym", "type": "choice", "values": [False, True],
                    'value_type': 'bool'}
     else:
-        ext_sp = {"name": "extreme_type", "type": "fixed", "value": "both",
+        ext_sp = {"name": "extreme_type", "type": "fixed", "value": "high",
                   'value_type': 'str'}
         asym_sp = {"name": "asym", "type": "fixed", "value": False,
                    'value_type': 'bool'}
@@ -77,7 +77,7 @@ def get_hpo_params(args):
     params = [lr_sp, weight_sp, loss_sp, ext_sp, asym_sp, 
               lds_ks_sp, lds_sigma_sp, lds_kernel_sp,
               fds_ks_sp, fds_sigma_sp, fds_kernel_sp]  
-    if args.IR == 'Vanilla':
+    if args.IR in {'Vanilla', 'GMM'}:
         num_trials = 10
     else:
         num_trials = 45

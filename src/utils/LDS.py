@@ -18,5 +18,4 @@ def get_lds_kernel_window(kernel, ks, sigma):
     else:
         laplace = lambda x: np.exp(-abs(x) / sigma) / (2. * sigma)
         kernel_window = list(map(laplace, np.arange(-half_ks, half_ks + 1))) / max(map(laplace, np.arange(-half_ks, half_ks + 1)))
-
     return kernel_window
