@@ -98,26 +98,6 @@ def bmc_loss(pred, target, noise_var):
     loss = loss * (2 * noise_var.mean())
     return loss
 
-# TODO: Remove unnecassary function!
-def sera_loss2(preds, trues, phi_trues, step=0.001, norm=False):
-    device = trues.device
-    th = torch.arange(0, 1 + step, step, device=device)  # [T]    
-    # Expand for broadcasting
-    phi_b   = phi_trues.unsqueeze(0)    # [1,B]
-    # mask: [T,B]
-    mask = (phi_b >= th.unsqueeze(1))   # for each threshold, which samples are included
-    # squared errors: [B]
-    se = (trues - preds) ** 2     
-    # errors per threshold: [T]
-    # sum only where mask==True
-    errors = torch.where(mask, se.unsqueeze(0), torch.zeros_like(se).unsqueeze(0)).sum(dim=1)
-    if norm and errors[0] != 0:
-        errors = errors / errors[0]
-    # trapezoidal integration to get SERA
-    sera = 0.5 * step * torch.sum(errors[:-1] + errors[1:])  # scalar
-    return sera
-
-
 def sera_loss(preds, trues, phi_trues, step=0.001, norm=False,
               method="exact", reduction="mean"):
     """
@@ -159,6 +139,24 @@ def sera_loss(preds, trues, phi_trues, step=0.001, norm=False,
         sera = sera / se.numel()
     elif reduction != "sum":
         raise ValueError("reduction must be 'mean' or 'sum'")
+    return sera
+
+def sera_trapezoidal_loss(preds, trues, phi_trues, step=0.001, norm=False):
+    device = trues.device
+    th = torch.arange(0, 1 + step, step, device=device)  # [T]    
+    # Expand for broadcasting
+    phi_b   = phi_trues.unsqueeze(0)    # [1,B]
+    # mask: [T,B]
+    mask = (phi_b >= th.unsqueeze(1))   # for each threshold, which samples are included
+    # squared errors: [B]
+    se = (trues - preds) ** 2     
+    # errors per threshold: [T]
+    # sum only where mask==True
+    errors = torch.where(mask, se.unsqueeze(0), torch.zeros_like(se).unsqueeze(0)).sum(dim=1)
+    if norm and errors[0] != 0:
+        errors = errors / errors[0]
+    # trapezoidal integration to get SERA
+    sera = 0.5 * step * torch.sum(errors[:-1] + errors[1:])  # scalar
     return sera
 
 # Custom class for Root Mean Squared Error (RMSE)

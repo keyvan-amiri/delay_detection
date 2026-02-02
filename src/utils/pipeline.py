@@ -284,8 +284,6 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     else:
         phi_np = relevance_test
     phi = torch.tensor(phi_np, dtype=torch.float32)
-    # TODO: remove this part
-    # phi = torch.tensor(relevance_test, dtype=torch.float32)  
     new_device = "cpu"
     preds, trues, phi = preds.to(new_device), trues.to(new_device), phi.to(new_device)
     SERA = sera_loss(preds, trues, phi)
