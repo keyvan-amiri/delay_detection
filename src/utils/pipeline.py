@@ -32,7 +32,9 @@ def update_args(args, cfg, parameters):
     args.fds_bucket_num = cfg.get('imbalanced', {}).get('fds_bucket_num', 50)
     args.fds_bucket_start = cfg.get('imbalanced', {}).get('fds_bucket_start', 0)
     args.fds_start_update = cfg.get('imbalanced', {}).get('fds_start_update', 0)
-    args.fds_start_smooth = cfg.get('imbalanced', {}).get('fds_start_smooth', 1)    
+    args.fds_start_smooth = cfg.get('imbalanced', {}).get('fds_start_smooth', 1) 
+    args.focal_beta = parameters.get("focal_beta", 0.2)
+    args.focal_gamma = parameters.get("focal_gamma", 1.0)
     args.extreme_type = parameters.get("extreme_type")
     args.asym = parameters.get("asym")   
     return args   

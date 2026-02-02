@@ -2,26 +2,34 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-def set_loss(args): 
+
+def set_loss(args):
     loss_func = args.loss
     if args.heteroscedastic:
-        criterion = heteroscedastic_loss(metric=loss_func)
-    else:
-        if loss_func == 'bmse':
-            criterion = bmc_loss
-        elif loss_func == 'sera':
-            criterion = sera_loss
-        elif loss_func == 'mae':
-            criterion = weighted_l1_loss
-        elif loss_func == 'mse':
-            criterion = weighted_mse_loss
-        elif loss_func == 'focal_mae':
-            criterion = weighted_focal_l1_loss
-        elif loss_func == 'focal_mse':
-            criterion = weighted_focal_mse_loss
-        elif loss_func == 'huber':    
-            criterion = weighted_huber_loss      
-    return criterion
+        return heteroscedastic_loss(metric=loss_func)
+    if loss_func == 'bmse':
+        return bmc_loss
+    if loss_func == 'sera':
+        return sera_loss
+    if loss_func == 'mae':
+        return weighted_l1_loss
+    if loss_func == 'mse':
+        return weighted_mse_loss
+    if loss_func == 'huber':
+        return weighted_huber_loss
+    if loss_func == 'focal_mae':
+        beta = getattr(args, "focal_beta", 0.2)
+        gamma = getattr(args, "focal_gamma", 1.0)
+        return lambda inputs, targets, weights=None: weighted_focal_l1_loss(
+            inputs, targets, weights=weights, activate='sigmoid', beta=beta, gamma=gamma
+        )
+    if loss_func == 'focal_mse':
+        beta = getattr(args, "focal_beta", 0.2)
+        gamma = getattr(args, "focal_gamma", 1.0)
+        return lambda inputs, targets, weights=None: weighted_focal_mse_loss(
+            inputs, targets, weights=weights, activate='sigmoid', beta=beta, gamma=gamma
+        )
+    raise ValueError(f"Unknown loss: {loss_func}")
 
 def weighted_l1_loss(inputs, targets, weights=None):
     loss = F.l1_loss(inputs, targets, reduction='none')
@@ -39,23 +47,32 @@ def weighted_mse_loss(inputs, targets, weights=None):
 
 def weighted_focal_l1_loss(inputs, targets, weights=None,
                            activate='sigmoid', beta=.2, gamma=1):
-    loss = F.l1_loss(inputs, targets, reduction='none')
-    loss *= (torch.tanh(beta * torch.abs(inputs - targets))) ** gamma if activate == 'tanh' else \
-        (2 * torch.sigmoid(beta * torch.abs(inputs - targets)) - 1) ** gamma
+    # per-sample absolute error
+    err = torch.abs(inputs - targets)
+    # focal scaling in [0, 1]
+    if activate == 'tanh':
+        scale = torch.tanh(beta * err).pow(gamma)
+    else:  # 'sigmoid' (matches your description)
+        scale = torch.sigmoid(beta * err).pow(gamma)
+    loss = scale * err  # Focal-R L1
     if weights is not None:
-        loss *= weights.expand_as(loss)
-    loss = torch.mean(loss)
-    return loss
+        loss = loss * weights.expand_as(loss)
+    return loss.mean()
 
 def weighted_focal_mse_loss(inputs, targets, weights=None,
                             activate='sigmoid', beta=.2, gamma=1):
-    loss = (inputs - targets) ** 2
-    loss *= (torch.tanh(beta * torch.abs(inputs - targets))) ** gamma if activate == 'tanh' else \
-        (2 * torch.sigmoid(beta * torch.abs(inputs - targets)) - 1) ** gamma
+    # per-sample squared error
+    err = torch.abs(inputs - targets)        # use abs for the scaling term
+    se  = (inputs - targets) ** 2            # base regression error
+    # focal scaling in [0, 1]
+    if activate == 'tanh':
+        scale = torch.tanh(beta * err).pow(gamma)
+    else:  # 'sigmoid' (matches your description)
+        scale = torch.sigmoid(beta * err).pow(gamma)
+    loss = scale * se  # Focal-R MSE
     if weights is not None:
-        loss *= weights.expand_as(loss)
-    loss = torch.mean(loss)
-    return loss
+        loss = loss * weights.expand_as(loss)
+    return loss.mean()
 
 def weighted_huber_loss(inputs, targets, weights=None, beta=1.):
     l1_loss = torch.abs(inputs - targets)
