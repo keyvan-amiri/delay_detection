@@ -279,8 +279,14 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     MAE_few = df_few["Absolute_error"].mean()
     preds = torch.tensor(df["Prediction"].values, dtype=torch.float32)
     trues = torch.tensor(df["GroundTruth"].values, dtype=torch.float32)
-    phi = torch.tensor(relevance_test, dtype=torch.float32)
+    if val_mode:
+        phi_np = relevance_val
+    else:
+        phi_np = relevance_test
+    phi = torch.tensor(phi_np, dtype=torch.float32)
+    # TODO: remove this part
+    # phi = torch.tensor(relevance_test, dtype=torch.float32)  
     new_device = "cpu"
     preds, trues, phi = preds.to(new_device), trues.to(new_device), phi.to(new_device)
-    SERA = sera_loss(preds, trues, phi) 
+    SERA = sera_loss(preds, trues, phi)
     return (MAE, MAE_many, MAE_med, MAE_few, SERA)

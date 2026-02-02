@@ -98,7 +98,8 @@ def bmc_loss(pred, target, noise_var):
     loss = loss * (2 * noise_var.mean())
     return loss
 
-def sera_loss(preds, trues, phi_trues, step=0.001, norm=False):
+# TODO: Remove unnecassary function!
+def sera_loss2(preds, trues, phi_trues, step=0.001, norm=False):
     device = trues.device
     th = torch.arange(0, 1 + step, step, device=device)  # [T]    
     # Expand for broadcasting
@@ -116,6 +117,49 @@ def sera_loss(preds, trues, phi_trues, step=0.001, norm=False):
     sera = 0.5 * step * torch.sum(errors[:-1] + errors[1:])  # scalar
     return sera
 
+
+def sera_loss(preds, trues, phi_trues, step=0.001, norm=False,
+              method="exact", reduction="mean"):
+    """
+    SERA = ∫_0^1 SER_t dt,  where SER_t = sum_{i: phi(y_i) >= t} (yhat_i - y_i)^2
+    Paper approximates this integral with trapezoidal rule on a grid (step=0.001).
+    But given phi in [0,1], the integral also has a closed form:
+        SERA = sum_i (yhat_i - y_i)^2 * phi_i
+    (derivation below).
+    method: "exact" or "trapz"
+    norm: if True, normalize by SER_{t=0} (= sum squared errors).
+    reduction: mean or sum
+    """
+    # ensure 1D
+    preds = preds.view(-1)
+    trues = trues.view(-1)
+    phi_trues = phi_trues.view(-1).clamp(0.0, 1.0).to(trues.device)
+    se = (trues - preds) ** 2  # [B]
+    ser0 = se.sum()
+    if method == "exact":
+        # closed form: sum se_i * ∫_0^1 1(phi_i >= t) dt = sum se_i * phi_i
+        sera = (se * phi_trues).sum()
+    elif method == "trapz":
+        # trapezoidal rule on uniform grid in [0,1]
+        # paper uses step=0.001 => T=1000, and SERA ≈ (1/T) * [0.5 SER_0 + Σ SER_k + 0.5 SER_T]
+        T = int(round(1.0 / step))
+        step_eff = 1.0 / T  # enforce consistent step so 1/T matches grid
+        th = torch.linspace(0.0, 1.0, T + 1, device=trues.device)  # [T+1]
+        # SER at each threshold: SER_tk = sum_{i: phi_i >= th_k} se_i
+        # mask shape [T+1, B]
+        mask = (phi_trues.unsqueeze(0) >= th.unsqueeze(1))
+        ser = torch.where(mask, se.unsqueeze(0), torch.zeros_like(se).unsqueeze(0)).sum(dim=1)  # [T+1]
+        # trapezoid: step * (0.5*ser[0] + ser[1:-1].sum() + 0.5*ser[-1])
+        sera = step_eff * (0.5 * ser[0] + ser[1:-1].sum() + 0.5 * ser[-1])
+    else:
+        raise ValueError("method must be 'exact' or 'trapz'")
+    if norm and ser0.item() != 0.0:
+        sera = sera / ser0
+    if reduction == "mean":
+        sera = sera / se.numel()
+    elif reduction != "sum":
+        raise ValueError("reduction must be 'mean' or 'sum'")
+    return sera
 
 # Custom class for Root Mean Squared Error (RMSE)
 class RMSELoss(nn.Module):
