@@ -22,10 +22,8 @@ class DALSTM_dataset(Dataset):
         assert X.shape[0] == y.shape[0]
         self.X = X
         self.y = y
-
         if weights is not None:
             self.weights = weights
-
         elif bin_edges is not None and trainval_bin_weights is not None:
             # Test set: map by bin index (NOT nearest neighbor label)
             y_np = self.y.detach().cpu().numpy()
@@ -33,21 +31,28 @@ class DALSTM_dataset(Dataset):
             w = trainval_bin_weights[bin_idx].astype(np.float32)
             w *= len(w) / w.sum()
             self.weights = w
-
         else:
-            # Train/val: compute weights and keep binning artifacts
-            w, bin_edges, bin_weights = self._prepare_weights(
-                reweight=args.reweight,
-                lds=args.LDS,
-                lds_kernel=args.lds_kernel,
-                lds_ks=args.lds_ks,
-                lds_sigma=args.lds_sigma,
-                n_bins=getattr(args, "n_bins", 100),        # add to args or default
-                binning=getattr(args, "binning", "quantile") # "quantile" or "uniform"
-            )
-            self.weights = w
-            self.bin_edges = bin_edges
-            self.bin_weights = bin_weights
+            # FIRST handle the case where args was not provided (common for test_dataset)
+            if args is None or getattr(args, "reweight", None) is None:
+                # default / BMSE-like branch: no weighting
+                n = int(self.y.shape[0])
+                self.weights = np.ones(n, dtype=np.float32)
+                self.bin_edges = None
+                self.bin_weights = None
+            else:
+                # Train/val: compute weights and keep binning artifacts
+                w, bin_edges, bin_weights = self._prepare_weights(
+                    reweight=args.reweight,
+                    lds=args.LDS,
+                    lds_kernel=args.lds_kernel,
+                    lds_ks=args.lds_ks,
+                    lds_sigma=args.lds_sigma,
+                    n_bins=getattr(args, "n_bins", 100),        # add to args or default
+                    binning=getattr(args, "binning", "quantile") # "quantile" or "uniform"
+                    )
+                self.weights = w
+                self.bin_edges = bin_edges
+                self.bin_weights = bin_weights
 
     def __len__(self):
         return self.X.shape[0]
@@ -64,12 +69,10 @@ class DALSTM_dataset(Dataset):
                          n_bins=100, binning="quantile"):
         assert reweight in {'none', 'inverse', 'sqrt_inv'}
         assert (not lds) or (reweight != 'none'), "Use 'inverse' or 'sqrt_inv' with LDS"
-
         y = self.y.detach().cpu().numpy().astype(np.float32)
         if reweight == "none":
             w = np.ones_like(y, dtype=np.float32)
             return w, None, None
-
         # ----- define bins -----
         y_min, y_max = float(y.min()), float(y.max())
         if binning == "quantile":
@@ -84,18 +87,14 @@ class DALSTM_dataset(Dataset):
             edges = np.linspace(y_min, y_max + 1e-6, n_bins + 1)
         else:
             raise ValueError("binning must be 'quantile' or 'uniform'")
-
         # digitize into [0..n_bins-1]
         bin_idx = np.digitize(y, edges[1:-1], right=False)
-
         # ----- counts per bin -----
         n_bins_eff = len(edges) - 1
         bin_idx = np.clip(bin_idx, 0, n_bins_eff - 1)
         counts = np.bincount(bin_idx, minlength=n_bins_eff).astype(np.float32)
-
         # avoid zero counts (can happen with weird edges); keep them as 1 for stability
         counts = np.clip(counts, 1.0, None)
-
         # ----- LDS on counts (correct order) -----
         if lds:
             kernel = get_lds_kernel_window(lds_kernel, lds_ks, lds_sigma)
@@ -103,23 +102,18 @@ class DALSTM_dataset(Dataset):
             counts_smooth = np.clip(counts_smooth, 1e-6, None)
         else:
             counts_smooth = counts
-
         # ----- reweighting from (smoothed) counts -----
         if reweight == "inverse":
             denom = counts_smooth
         else:  # sqrt_inv
             denom = np.sqrt(counts_smooth)
-
         bin_weights = 1.0 / denom  # per-bin weight
-
         # clip extreme weights rather than clipping counts
         # (prevents a few singleton-ish bins from dominating)
         w_max = np.percentile(bin_weights, 99.5)
         bin_weights = np.clip(bin_weights, 0.0, w_max)
-
         # map to samples
         w = bin_weights[bin_idx].astype(np.float32)
-
         # normalize to mean 1
         w *= len(w) / w.sum()
         return w, edges, bin_weights

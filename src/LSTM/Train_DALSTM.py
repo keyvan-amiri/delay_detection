@@ -1,171 +1,177 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Sep 22 09:04:23 2025
+@author: Keyvan Amiri Elyasi
+"""
 import numpy as np
 import torch
-import torch.nn.functional as F
-
-from torch.nn.utils import clip_grad_value_
+from torch.nn.utils import clip_grad_norm_
+#from torch.nn.utils import clip_grad_value_
 
 def train_epoch(model, train_loader, criterion, optimizer, epoch,
                 bmse=False, fds_model=False, heteroscedastic=False,
                 clip_grad_norm=False, clip_value=None, fds_config=None,
                 device=None):
     model.train()
-    if fds_model:
-        all_features = []
-        all_labels_bucket = []   # <-- bucket IDs only for FDS
+    # Collect for FDS stats only when needed
+    all_features = []
+    all_labels_bucket = []
     for batch in train_loader:
-        inputs = batch[0].to(device)
-        targets = batch[1].to(device)   # continuous y (keep as-is)
-        weights = batch[2].to(device)
-        optimizer.zero_grad()
-
-        if fds_model and bmse:
+        inputs  = batch[0].to(device)
+        targets = batch[1].to(device)   # [B] continuous
+        weights = batch[2].to(device)   # [B] (or broadcastable)
+        optimizer.zero_grad(set_to_none=True)
+        # -------------------------
+        # 1) Heteroscedastic (MVE)
+        # -------------------------
+        if heteroscedastic:
+            mean, log_var = model(inputs)  # both [B]
+            loss = criterion(mean, targets, log_var)
+        # -------------------------
+        # 2) FDS + BMSE (scalar noise_var)
+        # -------------------------
+        elif fds_model and bmse:
             batch_results = model(inputs, targets, epoch)
-            mean = batch_results['preds_mu']
-            log_var = batch_results['preds_logvar']
-            noise_var = log_var.exp()
+            mean = batch_results["preds_mu"]          # [B]
+            noise_var = batch_results["noise_var"]    # scalar tensor
+            # BMC expects (B,1) for pred/target in your criterion wrapper
+            assert noise_var.numel() == 1, f"BMSE expects scalar noise_var, got shape {noise_var.shape}"
             mean_2d = mean.view(-1, 1)
             targets_2d = targets.view(-1, 1)
-            noise_var_2d = noise_var.view(-1, 1)
-            loss = criterion(mean_2d, targets_2d, noise_var_2d)
-            # Collect features + BUCKET labels for FDS stats
-            batch_features = batch_results['features'].detach()
-            batch_labels_bucket = model.bucketize_for_fds(targets).detach()
-            all_features.append(batch_features)
-            all_labels_bucket.append(batch_labels_bucket)
-        elif heteroscedastic or bmse:
-            mean, log_var = model(inputs)
-            if heteroscedastic:
-                loss = criterion(mean, targets, log_var)
-            else:
-                noise_var = log_var.exp()
-                mean_2d = mean.view(-1, 1)
-                targets_2d = targets.view(-1, 1)
-                noise_var_2d = noise_var.view(-1, 1)
-                loss = criterion(mean_2d, targets_2d, noise_var_2d)
+            loss = criterion(mean_2d, targets_2d, noise_var)  # scalar noise_var
+            # Collect features + bucket IDs for FDS running stats
+            all_features.append(batch_results["features"].detach())
+            all_labels_bucket.append(model.bucketize_for_fds(targets).detach())
+        # -------------------------
+        # 3) BMSE (no FDS): scalar noise_var
+        # -------------------------
+        elif bmse:
+            mean, noise_var = model(inputs)  # mean [B], noise_var scalar
+            mean_2d = mean.view(-1, 1)
+            targets_2d = targets.view(-1, 1)
+            assert noise_var.numel() == 1, f"BMSE expects scalar noise_var, got shape {noise_var.shape}"
+            loss = criterion(mean_2d, targets_2d, noise_var)
+        # -------------------------
+        # 4) FDS (no BMSE): weighted regression
+        # -------------------------
         elif fds_model:
             batch_results = model(inputs, targets, epoch)
-            outputs = batch_results['preds']
+            outputs = batch_results["preds"]  # [B]
             loss = criterion(outputs, targets, weights)
-            # Collect features + BUCKET labels for FDS stats
-            batch_features = batch_results['features'].detach()
-            batch_labels_bucket = model.bucketize_for_fds(targets).detach()
-            all_features.append(batch_features)
-            all_labels_bucket.append(batch_labels_bucket)
+            all_features.append(batch_results["features"].detach())
+            all_labels_bucket.append(model.bucketize_for_fds(targets).detach())
+        # -------------------------
+        # 5) Plain (no FDS / no BMSE / no MVE): weighted regression
+        # -------------------------
         else:
-            outputs = model(inputs)
+            outputs = model(inputs)  # [B]
             loss = criterion(outputs, targets, weights)
-
         loss.backward()
+        # Gradient clipping (choose one style)
         if clip_grad_norm:
-            clip_grad_value_(model.parameters(), clip_value=clip_value)
+            clip_grad_norm_(model.parameters(), max_norm=clip_value)
         optimizer.step()
+    # -------------------------
+    # Update FDS stats after epoch
+    # -------------------------
+    if fds_model and fds_config is not None and epoch >= fds_config["start_update"]:
+        if len(all_features) > 0:
+            training_features = torch.cat(all_features, dim=0)
+            training_labels_bucket = torch.cat(all_labels_bucket, dim=0)
 
-    # Update FDS statistics after each epoch (use bucket IDs!)
-    if fds_model and epoch >= fds_config['start_update']:
-        training_features = torch.cat(all_features, dim=0)
-        training_labels_bucket = torch.cat(all_labels_bucket, dim=0)
-        # Match FDS expected shape: (N,1) then it squeezes to (N,)
-        model.FDS.update_last_epoch_stats(epoch)
-        model.FDS.update_running_stats(
-            training_features, training_labels_bucket.unsqueeze(1), epoch
-        )
+            model.FDS.update_last_epoch_stats(epoch)
+            model.FDS.update_running_stats(
+                training_features,
+                training_labels_bucket.unsqueeze(1),  # (N,1) for backward compat
+                epoch
+            )
     return loss
 
 
-def validate_epoch(model, val_loader, criterion, epoch, 
+def validate_epoch(model, val_loader, criterion, epoch,
                    bmse=False, fds_model=False, heteroscedastic=False,
                    device=None):
     model.eval()
+    total_valid_loss = 0.0
     with torch.no_grad():
-        total_valid_loss = 0
         for batch in val_loader:
-            inputs = batch[0].to(device)
-            targets = batch[1].to(device)
-            weights = batch[2].to(device)
-            if fds_model and bmse:
-                batch_results = model(inputs, targets, epoch)    
-                mean = batch_results['preds_mu']
-                log_var = batch_results['preds_logvar']
-                noise_var = log_var.exp()
-                mean = mean.view(-1, 1)
-                targets = targets.view(-1, 1)
-                noise_var = noise_var.view(-1, 1)
-                valid_loss = criterion(mean, targets, noise_var)
-            elif heteroscedastic or bmse:
-                mean, log_var = model(inputs)
-                if heteroscedastic:
-                    valid_loss = criterion(mean, targets, log_var) 
-                else:
-                    noise_var = log_var.exp()
-                    mean = mean.view(-1, 1)
-                    targets = targets.view(-1, 1)
-                    noise_var = noise_var.view(-1, 1)
-                    valid_loss = criterion(mean, targets, noise_var)  
+            inputs  = batch[0].to(device)
+            targets = batch[1].to(device)   # [B]
+            weights = batch[2].to(device)   # [B] or broadcastable
+            # 1) Heteroscedastic (per-sample logvar)
+            if heteroscedastic:
+                mean, log_var = model(inputs)          # both [B]
+                valid_loss = criterion(mean, targets, log_var)
+            # 2) FDS + BMSE (scalar noise_var)
+            elif fds_model and bmse:
+                batch_results = model(inputs, targets, epoch)
+                mean = batch_results["preds_mu"]        # [B]
+                noise_var = batch_results["noise_var"]  # scalar tensor
+                assert noise_var.numel() == 1, f"BMSE expects scalar noise_var, got shape {noise_var.shape}"
+                valid_loss = criterion(mean.view(-1, 1), targets.view(-1, 1), noise_var)
+            # 3) BMSE (no FDS): scalar noise_var
+            elif bmse:
+                mean, noise_var = model(inputs)         # mean [B], noise_var scalar
+                assert noise_var.numel() == 1, f"BMSE expects scalar noise_var, got shape {noise_var.shape}"
+                valid_loss = criterion(mean.view(-1, 1), targets.view(-1, 1), noise_var)
+            # 4) FDS (no BMSE): weighted regression
             elif fds_model:
-                outputs = model(inputs, targets, epoch)['preds']
+                outputs = model(inputs, targets, epoch)["preds"]  # [B]
                 valid_loss = criterion(outputs, targets, weights)
+            # 5) Plain weighted regression
             else:
-                outputs = model(inputs)
-                valid_loss = criterion(outputs, targets, weights)                
-            total_valid_loss += valid_loss.item()                    
-        average_valid_loss = total_valid_loss / len(val_loader)  
-    return average_valid_loss
+                outputs = model(inputs)                 # [B]
+                valid_loss = criterion(outputs, targets, weights)
+            total_valid_loss += float(valid_loss.item())
+    return total_valid_loss / len(val_loader)
 
-def DALSTM_inference(model, checkpoint, inference_loader, all_results, 
-                     test_lengths, test_cases, 
-                     bmse=None, fds_model=None, heteroscedastic=None, 
+
+def DALSTM_inference(model, checkpoint, inference_loader, all_results,
+                     test_lengths, test_cases,
+                     bmse=False, fds_model=False, heteroscedastic=False,
                      val_mode=False, device=None):
-    # set variabls to zero to collect loss values and length ids
-    absolute_error = 0
     length_idx = 0
     with torch.no_grad():
-        for index, test_batch in enumerate(inference_loader):
+        for test_batch in inference_loader:
             inputs = test_batch[0].to(device)
-            _y_truth = test_batch[1].to(device)
-            batch_size = inputs.shape[0]            
-            # get model outputs, and uncertainties if required
+            y_true = test_batch[1].to(device)
+            batch_size = inputs.shape[0]
+            # ---- predictions ----
             if fds_model and bmse:
-                epoch = checkpoint['epoch']
-                _y_pred = model(inputs, _y_truth, epoch)['preds_mu']
-            elif heteroscedastic or bmse:
-                _y_pred, log_var = model(inputs)
-                if heteroscedastic:
-                    aleatoric_std = torch.sqrt(torch.exp(log_var))
-                    epistemic_std = torch.zeros_like(aleatoric_std)
-                    total_std = torch.sqrt(epistemic_std**2 + aleatoric_std**2)   
+                epoch = checkpoint["epoch"]
+                y_pred = model(inputs, y_true, epoch)["preds_mu"]   # [B]
+            elif bmse:
+                # BMSE: mean + scalar noise_var (ignore noise at inference)
+                y_pred, noise_var = model(inputs)                   # y_pred [B], noise_var scalar
+
+            elif heteroscedastic:
+                y_pred, log_var = model(inputs)                     # both [B]
+                aleatoric_std = torch.sqrt(torch.exp(log_var))
+                epistemic_std = torch.zeros_like(aleatoric_std)
+                total_std = torch.sqrt(epistemic_std**2 + aleatoric_std**2)
             elif fds_model:
-                epoch = checkpoint['epoch']
-                _y_pred = model(inputs, _y_truth, epoch)['preds']
-            else:            
-                _y_pred = model(inputs)
-            # Ensure predictions are positive
+                epoch = checkpoint["epoch"]
+                y_pred = model(inputs, y_true, epoch)["preds"]      # [B]
+            else:
+                y_pred = model(inputs)                              # [B]
+            # only keep this if your y is always >= 0
             epsilon = 1e-8
-            _y_pred = torch.maximum(_y_pred, torch.tensor(epsilon))              
-            # Compute batch loss
-            absolute_error += F.l1_loss(_y_pred, _y_truth).item()
-            # Detach predictions and ground truths (np arrays)
-            _y_truth = _y_truth.detach().cpu().numpy()
-            _y_pred = _y_pred.detach().cpu().numpy()
-            mae_batch = np.abs(_y_truth - _y_pred)
-            # collect inference result in all_result dict.
-            all_results['GroundTruth'].extend(_y_truth.tolist())
-            all_results['Prediction'].extend(_y_pred.tolist())
-            # for test set we collect prefix lengths
+            y_pred = torch.maximum(y_pred, torch.tensor(epsilon, device=device))
+            # ---- errors ----
+            y_true_np = y_true.detach().cpu().numpy()
+            y_pred_np = y_pred.detach().cpu().numpy()
+            mae_batch = np.abs(y_true_np - y_pred_np)
+            all_results["GroundTruth"].extend(y_true_np.tolist())
+            all_results["Prediction"].extend(y_pred_np.tolist())
+            all_results["Absolute_error"].extend(mae_batch.tolist())
             if not val_mode:
-                pre_lengths = test_lengths[length_idx:length_idx+batch_size]
-                prefix_lengths = (np.array(pre_lengths).reshape(-1, 1)).tolist()
-                all_results['Prefix_length'].extend(prefix_lengths)
-                pre_cases = test_cases[length_idx:length_idx+batch_size]
-                all_results['Case_id'].extend(np.array(pre_cases).reshape(-1, 1).tolist())
-                length_idx+=batch_size
-            all_results['Absolute_error'].extend(mae_batch.tolist())
+                pre_lengths = test_lengths[length_idx:length_idx + batch_size]
+                pre_cases = test_cases[length_idx:length_idx + batch_size]
+                all_results["Prefix_length"].extend(np.array(pre_lengths).reshape(-1, 1).tolist())
+                all_results["Case_id"].extend(np.array(pre_cases).reshape(-1, 1).tolist())
+                length_idx += batch_size
             if heteroscedastic:
-                epistemic_std = epistemic_std.detach().cpu().numpy()
-                aleatoric_std = aleatoric_std.detach().cpu().numpy()
-                total_std = total_std.detach().cpu().numpy()                
-                all_results['Epistemic_Uncertainty'].extend(epistemic_std.tolist())
-                all_results['Aleatoric_Uncertainty'].extend(aleatoric_std.tolist())
-                all_results['Total_Uncertainty'].extend(total_std.tolist()) 
-        num_test_batches = len(inference_loader)    
-        absolute_error /= num_test_batches
+                all_results["Epistemic_Uncertainty"].extend(epistemic_std.detach().cpu().numpy().tolist())
+                all_results["Aleatoric_Uncertainty"].extend(aleatoric_std.detach().cpu().numpy().tolist())
+                all_results["Total_Uncertainty"].extend(total_std.detach().cpu().numpy().tolist())
     return all_results

@@ -92,10 +92,13 @@ def bmc_loss(pred, target, noise_var):
         loss = loss * (2 * noise_var)
         return loss
     """
+    # ensure scalar + stable
+    noise_var = noise_var.clamp(min=1e-6)
     logits = -0.5 * (pred - target.T).pow(2) / noise_var
     labels = torch.arange(pred.shape[0], device=logits.device, dtype=torch.long)
     loss = F.cross_entropy(logits, labels)
-    loss = loss * (2 * noise_var.mean())
+    # scalar τ → no mean()
+    loss = loss * (2.0 * noise_var)
     return loss
 
 def sera_loss(preds, trues, phi_trues, step=0.001, norm=False,
