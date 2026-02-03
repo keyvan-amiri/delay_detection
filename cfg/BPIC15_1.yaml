@@ -8,7 +8,7 @@ data:
   trans_col: 'lifecycle:transition'
   res_col: 'org:resource'
   num_TS: 1
-  use_data_attributes: False
+  use_data_attributes: True
   case_num_feat: ['SUMleges']
   case_cat_feat: ['caseStatus', 'last_phase', 'Responsible_actor', 'parts', 'termName', 'requestComplete', 'caseProcedure', 'Includes_subCases']
   event_num_feat: []

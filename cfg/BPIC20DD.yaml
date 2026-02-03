@@ -8,11 +8,11 @@ data:
   trans_col: 'lifecycle:transition'
   res_col: 'org:resource'
   num_TS: 1
-  use_data_attributes: False
+  use_data_attributes: True
   case_num_feat: ['Amount']
   case_cat_feat: []
   event_num_feat: []
-  event_cat_feat: ['org:role']
+  event_cat_feat: ['org:role', 'org:resource']
   train_ratio: 0.8
   val_ratio: 0.2
   delay_thresh: 0.1

@@ -8,7 +8,7 @@ data:
   trans_col: 'lifecycle:transition'
   res_col: 'org:resource'
   num_TS: 1
-  use_data_attributes: False
+  use_data_attributes: True
   case_num_feat: ['RequestedAmount', 'Permit RequestedBudget']
   case_cat_feat: ['OrganizationalEntity', 'Permit OrganizationalEntity', 'Permit BudgetNumber']
   event_num_feat: []

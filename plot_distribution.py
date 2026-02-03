@@ -225,43 +225,312 @@ def plot_cindex_curves_and_save(
 
     return summary_df, all_curves
 
+def residual_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag="seed409"):
+    """
+    Residuals vs GroundTruth plot for tail-focused error structure.
+    Same signature as your KDE function.
+    Residual = Prediction - GroundTruth
+    """
+    gt = df_lst[0]["GroundTruth"].to_numpy()
 
-def distribution_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag="seed409"):
+    plt.figure(figsize=(9, 5))
+    for df, lab in zip(df_lst, loaded_labels):
+        preds = df["Prediction"].to_numpy()
+        mask = ~np.isnan(gt) & ~np.isnan(preds)
+        x = gt[mask]
+        r = preds[mask] - x
+        # Use hexbin for large datasets, scatter otherwise
+        if len(x) > 5000:
+            plt.hexbin(x, r, gridsize=50, mincnt=1, alpha=0.6)
+        else:
+            plt.scatter(x, r, s=10, alpha=0.5, label=f"{lab}")
+        # Add running median trend line (robust bias indicator)
+        order = np.argsort(x)
+        xs = x[order]
+        rs = r[order]
+        bins = np.array_split(np.arange(len(xs)), 40)
+        xm = [xs[b].mean() for b in bins if len(b) > 0]
+        rm = [np.median(rs[b]) for b in bins if len(b) > 0]
+        plt.plot(xm, rm, linewidth=2, label=f"{lab} median")
+    # zero-error line
+    plt.axhline(0, linestyle="--", linewidth=1)
+    plt.xlabel("GroundTruth")
+    plt.ylabel("Residual (Prediction − GroundTruth)")
+    plt.title(f"Residuals vs GroundTruth ({dataset} / {model})")
+    plt.legend()
+    out_pdf = os.path.join(
+        result_folder,
+        f"{dataset}_{model}_residuals_vs_gt_{seed_tag}.pdf"
+    )
+    plt.tight_layout()
+    plt.savefig(out_pdf, format="pdf")
+    plt.close()
+    print(f"[OK] Saved residual plot PDF: {out_pdf}")
+
+def distribution_QQ_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag="seed409"):
+    """
+    Quantile–Quantile plot: Predictions vs GroundTruth.
+    Same signature as your KDE function.
+    """
+    gt = df_lst[0]["GroundTruth"].to_numpy()
+    gt = gt[~np.isnan(gt)]
+    # quantile grid
+    q = np.linspace(0.001, 0.999, 400)
+    gt_q = np.quantile(gt, q)
+    plt.figure(figsize=(6, 6))
+    # diagonal reference
+    gmin, gmax = gt_q.min(), gt_q.max()
+    plt.plot([gmin, gmax], [gmin, gmax], linestyle="--", linewidth=1, label="Ideal")
+    for df, lab in zip(df_lst, loaded_labels):
+        preds = df["Prediction"].to_numpy()
+        preds = preds[~np.isnan(preds)]
+        pred_q = np.quantile(preds, q)
+        plt.plot(gt_q, pred_q, linewidth=2, label=f"{lab}")
+    plt.xlabel("GroundTruth quantiles")
+    plt.ylabel("Prediction quantiles")
+    plt.title(f"QQ Plot ({dataset} / {model})")
+    plt.legend()
+    out_pdf = os.path.join(
+        result_folder,
+        f"{dataset}_{model}_qq_{seed_tag}.pdf"
+    )
+    plt.tight_layout()
+    plt.savefig(out_pdf, format="pdf")
+    plt.close()
+    print(f"[OK] Saved QQ plot PDF: {out_pdf}")
+       
+def distribution_plot_cdf(dataset, model, df_lst, loaded_labels, result_folder, seed_tag="seed409"):
     gt = df_lst[0]["GroundTruth"].to_numpy()
 
     all_vals = [gt] + [df["Prediction"].to_numpy() for df in df_lst]
     all_vals = np.concatenate(all_vals)
     xmin, xmax = np.nanmin(all_vals), np.nanmax(all_vals)
-    x = np.linspace(xmin, xmax, 1000)
 
     plt.figure(figsize=(9, 5))
-
-    kde_gt = gaussian_kde(gt[~np.isnan(gt)])
-    plt.plot(x, kde_gt(x), label="GroundTruth")
-
+    # ---------- ECDF helper ----------
+    def ecdf(arr):
+        arr = np.sort(arr[~np.isnan(arr)])
+        y = np.arange(1, len(arr) + 1) / len(arr)
+        return arr, y
+    # ---------- Ground Truth ----------
+    x_gt, y_gt = ecdf(gt)
+    plt.step(x_gt, y_gt, where="post", label="GroundTruth")
+    # ---------- Predictions ----------
+    for df, lab in zip(df_lst, loaded_labels):
+        preds = df["Prediction"].to_numpy()
+        x_p, y_p = ecdf(preds)
+        plt.step(x_p, y_p, where="post", label=f"Pred: {lab}")
+    plt.xlim(xmin, xmax)
+    plt.ylim(0, 1)
+    plt.xlabel("Value")
+    plt.ylabel("Cumulative Probability")
+    plt.title(f"GroundTruth vs Predictions CDF ({dataset} / {model})")
+    plt.legend()
+    out_pdf = os.path.join(
+        result_folder,
+        f"{dataset}_{model}_gt_vs_preds_cdf_{seed_tag}.pdf"
+    )
+    plt.tight_layout()
+    plt.savefig(out_pdf, format="pdf")
+    plt.close()
+    print(f"[OK] Saved CDF PDF: {out_pdf}")
+    
+def distribution_calibration_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag="seed409"):
+    """
+    Calibration in quantile bins (reliability for regression marginals).
+    Same signature as your KDE function.
+    Bins are defined by GroundTruth quantiles on the (available) test set.
+    For each bin: plot mean(GT) vs mean(Pred). Ideal behavior follows y=x.
+    """
+    # --- settings (edit if you want) ---
+    n_bins = 10  # deciles
+    use_median = False  # set True for median calibration (more robust to outliers)
+    gt_all = df_lst[0]["GroundTruth"].to_numpy()
+    # We'll compute bin edges on the available (non-NaN) GT values
+    gt_valid = gt_all[~np.isnan(gt_all)]
+    if len(gt_valid) < n_bins * 5:
+        print(f"[WARN] Very few GT samples ({len(gt_valid)}) for {n_bins} bins; plot may be noisy.")
+    # Quantile bin edges (ensure strictly increasing)
+    qs = np.linspace(0, 1, n_bins + 1)
+    edges = np.quantile(gt_valid, qs)
+    # Make edges strictly increasing to avoid issues when many identical values exist
+    edges = np.unique(edges)
+    if len(edges) < 3:
+        raise ValueError("Not enough unique GroundTruth values to form quantile bins.")
+    # Bin indices using the edges; last edge inclusive
+    # We'll use np.digitize with right=True so that x==edge goes to the lower bin.
+    def assign_bins(x, bin_edges):
+        # bins are 0..(K-2) where K=len(bin_edges)
+        b = np.digitize(x, bin_edges[1:-1], right=True)
+        return b
+    plt.figure(figsize=(6.5, 6.5))
+    # Ideal calibration line range (based on GT)
+    xmin, xmax = np.nanmin(gt_all), np.nanmax(gt_all)
+    plt.plot([xmin, xmax], [xmin, xmax], linestyle="--", linewidth=1, label="Ideal")
+    for df, lab in zip(df_lst, loaded_labels):
+        preds_all = df["Prediction"].to_numpy()
+        mask = ~np.isnan(gt_all) & ~np.isnan(preds_all)
+        gt = gt_all[mask]
+        preds = preds_all[mask]
+        bins = assign_bins(gt, edges)
+        K = len(edges) - 1  # number of bins
+        x_centers = []
+        y_centers = []
+        x_err = []
+        y_err = []
+        for b in range(K):
+            idx = np.where(bins == b)[0]
+            if len(idx) == 0:
+                continue
+            gt_b = gt[idx]
+            pr_b = preds[idx]
+            if use_median:
+                x0 = np.median(gt_b)
+                y0 = np.median(pr_b)
+            else:
+                x0 = np.mean(gt_b)
+                y0 = np.mean(pr_b)
+            x_centers.append(x0)
+            y_centers.append(y0)
+            # Error bars: within-bin spread (1 std). Comment out if you want cleaner plot.
+            x_err.append(np.std(gt_b))
+            y_err.append(np.std(pr_b))
+        x_centers = np.array(x_centers)
+        y_centers = np.array(y_centers)
+        x_err = np.array(x_err)
+        y_err = np.array(y_err)
+        plt.errorbar(
+            x_centers, y_centers,
+            xerr=x_err, yerr=y_err,
+            fmt="o-", capsize=3, linewidth=2,
+            label=f"{lab}"
+        )
+    plt.xlabel("GroundTruth (binned by quantiles; mean per bin)")
+    plt.ylabel("Prediction (mean per bin)")
+    plt.title(f"Quantile-bin Calibration ({dataset} / {model})")
+    plt.legend()
+    out_pdf = os.path.join(
+        result_folder,
+        f"{dataset}_{model}_quantile_bin_calibration_{seed_tag}.pdf"
+    )
+    plt.tight_layout()
+    plt.savefig(out_pdf, format="pdf")
+    plt.close()
+    print(f"[OK] Saved quantile-bin calibration PDF: {out_pdf}")
+    
+def distribution_plot(dataset, model, df_lst, loaded_labels, result_folder,
+                      seed_tag="seed409", n_bins = 20):
+    """
+    Histogram with shared bins + transparency.
+    """
+    gt = df_lst[0]["GroundTruth"].to_numpy()
+    # collect all values to build shared bins
+    all_vals = [gt] + [df["Prediction"].to_numpy() for df in df_lst]
+    all_vals = np.concatenate(all_vals)
+    all_vals = all_vals[~np.isnan(all_vals)]
+    xmin, xmax = np.min(all_vals), np.max(all_vals)
+    # choose bin count 
+    n_bins = n_bins
+    bins = np.linspace(xmin, xmax, n_bins + 1)
+    plt.figure(figsize=(9, 5))
+    # --- Ground Truth ---
+    gt_clean = gt[~np.isnan(gt)]
+    plt.hist(
+        gt_clean,
+        bins=bins,
+        density=True,
+        alpha=0.35,
+        label="GroundTruth"
+    )
+    # --- Predictions ---
     for df, lab in zip(df_lst, loaded_labels):
         preds = df["Prediction"].to_numpy()
         preds = preds[~np.isnan(preds)]
-        kde_p = gaussian_kde(preds)
-        plt.plot(x, kde_p(x), label=f"Pred: {lab}")
-
+        plt.hist(
+            preds,
+            bins=bins,
+            density=True,
+            alpha=0.35,
+            label=f"Pred: {lab}"
+        )
     plt.xlabel("Value")
     plt.ylabel("Density")
-    plt.title(f"GroundTruth vs Predictions distribution ({dataset} / {model})")
+    plt.title(f"GroundTruth vs Predictions Histogram ({dataset} / {model})")
     plt.legend()
+    out_pdf = os.path.join(
+        result_folder,
+        f"{dataset}_{model}_gt_vs_preds_hist_{seed_tag}.pdf"
+    )
+    plt.tight_layout()
+    plt.savefig(out_pdf, format="pdf")
+    plt.close()
+    print(f"[OK] Saved histogram PDF: {out_pdf}")
 
+ 
+def distribution_kde_plot(
+        dataset, model, df_lst, loaded_labels, result_folder,
+        seed_tag="seed409", bw=0.6, tail_focus=True, focus_ratio=0.10,
+        tail_computation=False):
+    gt = df_lst[0]["GroundTruth"].to_numpy()
+    gt_clean = gt[~np.isnan(gt)]
+    all_vals = [gt] + [df["Prediction"].to_numpy() for df in df_lst]
+    all_vals = np.concatenate(all_vals)
+    xmin, xmax = np.nanmin(all_vals), np.nanmax(all_vals)
+    x = np.linspace(xmin, xmax, 1000)
+    plt.figure(figsize=(9, 5))
+    # KDE curves
+    kde_gt = gaussian_kde(gt_clean, bw_method=bw)
+    plt.plot(x, kde_gt(x), label="GroundTruth")
+    # Collect tail-mass stats for annotation (computed if tail_focus)
+    tail_stats = []
+    for df, lab in zip(df_lst, loaded_labels):
+        preds = df["Prediction"].to_numpy()
+        preds_clean = preds[~np.isnan(preds)]
+        kde_p = gaussian_kde(preds_clean, bw_method=bw)
+        plt.plot(x, kde_p(x), label=f"Pred: {lab}")
+        tail_stats.append((lab, preds_clean))
+    plt.xlabel("Remaining Time (Days)", fontsize=18, fontweight='bold')
+    plt.ylabel("Density", fontsize=18, fontweight='bold')
+    if tail_focus:
+        # Tail defined from GT quantile
+        q_tail = np.nanquantile(gt_clean, 1 - focus_ratio)
+        # Visual tail markers
+        plt.axvline(q_tail, linestyle="--", linewidth=1)
+        plt.axvspan(q_tail, xmax, alpha=0.08)
+        # Empirical tail mass for GT and each method
+        if tail_computation:
+            gt_tail_mass = np.mean(gt_clean >= q_tail)
+            lines = [f"Tail region: y ≥ q{int((1-focus_ratio)*100)}(GT) = {q_tail:.2f}",
+                     f"GT tail mass: {gt_tail_mass*100:.1f}%"]
+            for lab, preds_clean in tail_stats:
+                pred_tail_mass = np.mean(preds_clean >= q_tail)
+                lines.append(f"{lab} tail mass: {pred_tail_mass*100:.1f}%")
+            # Put annotation box in axes coords (stable placement)
+            plt.text(
+                0.98, 0.80,
+                "\n".join(lines),
+                transform=plt.gca().transAxes,
+                ha="right", va="top",
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.85, edgecolor="lightgray")
+                )
+        plt.text(q_tail + 1, plt.ylim()[1] * 0.70, f"Top {int(focus_ratio*100)}% tail", fontsize=18,fontweight='bold')        
+    #plt.title(f"GroundTruth vs Predictions distribution ({dataset} / {model})")
+    plt.legend(prop={'size': 18, 'weight': 'bold'})
+    plt.xticks(fontsize=14, fontweight='bold')
+    plt.yticks(fontsize=14, fontweight='bold')
     out_pdf = os.path.join(result_folder, f"{dataset}_{model}_gt_vs_preds_kde_{seed_tag}.pdf")
     plt.tight_layout()
     plt.savefig(out_pdf, format="pdf")
     plt.close()
     print(f"[OK] Saved KDE PDF: {out_pdf}")
-
+    
 def main():
     dataset = "BPIC20PTC"  # HelpDesk / BPIC20PTC
     model = "DALSTM"
-    IR_lst = ["Vanilla", "EAL"]
+    IR_lst = ["Vanilla", 'BMSE']
     smooth_lst = ["wos", "wos"]
-    labels = ["Vanilla", "EAL"]
+    labels = ["Vanilla", 'BMSE']
     #IR_lst = ['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA']
     #smooth_lst = ['wos', 'wos', 'wos', 'wos', 'wos']
     #labels = ['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA']
@@ -296,8 +565,13 @@ def main():
     if len(df_lst) == 0:
         raise RuntimeError("No CSVs loaded. Check result_folder / filenames.")
 
-    # 1) KDE distribution plot
-    distribution_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
+    # 1) distribution plot(s)
+    #distribution_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
+    distribution_kde_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
+    #residual_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
+    #distribution_QQ_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
+    #distribution_plot_cdf(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
+    #distribution_calibration_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
     if not filter_length:
         # 2) C-index cumulative curves + AUC summaries
         summary_df, _ = plot_cindex_curves_and_save(
