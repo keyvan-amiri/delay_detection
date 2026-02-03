@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from filelock import FileLock
 
-from src.utils.utils import add_shots
+from src.utils.utils import add_shots_quantile
 from src.utils.loss_functions import sera_loss    
 from src.utils.set_args import define_experiments, handle_experiment
 
@@ -38,7 +38,7 @@ def compute_metrics_from_df(results_df: pd.DataFrame):
 
     mae = float(results_df["Absolute_error"].mean())
 
-    df = add_shots(results_df)
+    df = add_shots_quantile(results_df)
 
     # If there are no rows in a bucket, mean() => nan; that's fine.
     mae_many = float(df.loc[df["many"] == 1, "Absolute_error"].mean())

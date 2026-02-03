@@ -14,7 +14,7 @@ from src.LSTM.load_dataset import load_DALSTM_data, get_train_params
 from src.LSTM.model_DALSTM import get_DALSTM_model
 from src.utils.loss_functions import set_loss
 from src.LSTM.Train_DALSTM import train_epoch, validate_epoch, DALSTM_inference
-from src.utils.utils import add_shots
+from src.utils.utils import add_shots_quantile
 from src.utils.loss_functions import sera_loss
 from src.utils.fds import add_bin_edges
 
@@ -269,7 +269,7 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
         results_df.to_csv(res_path, index=False)
     MAE = results_df["Absolute_error"].mean()
     # get MAE on many, med, and few shots
-    df = add_shots(results_df)
+    df = add_shots_quantile(results_df)
     df_many = df[df["many"] == 1]
     df_med  = df[df["med"] == 1]
     df_few  = df[df["few"] == 1]

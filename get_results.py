@@ -10,7 +10,7 @@ import pickle
 import yaml
 import pandas as pd
 
-from src.utils.utils import add_shots
+from src.utils.utils import add_shots_quantile
 from src.LSTM.load_dataset import load_DALSTM_data
 from src.utils.set_args import define_experiments
 from src.utils.set_args import add_arguments
@@ -28,7 +28,7 @@ def get_string(IR):
 
 def update_results(results_df):
     MAE = results_df["Absolute_error"].mean()
-    df = add_shots(results_df)
+    df = add_shots_quantile(results_df)
     df_many = df[df["many"] == 1]
     df_med  = df[df["med"] == 1]
     df_few  = df[df["few"] == 1]

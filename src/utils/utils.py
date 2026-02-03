@@ -6,6 +6,89 @@ Created on Tue Sep  9 13:29:04 2025
 import pandas as pd
 import numpy as np
 
+def add_shots_quantile(
+    df_inp,
+    trg_col="GroundTruth",
+    many_frac=0.6,
+    med_frac=0.3,
+    tail="high",   # "high", "low", or "both"
+):
+    """
+    Quantile-based grouping for regression targets.
+
+    Groups samples into many / med / few using quantiles.
+
+    Parameters
+    ----------
+    df_inp : pandas DataFrame
+    trg_col : str
+        Target column name
+    many_frac : float
+        Fraction assigned to many-shot region
+    med_frac : float
+        Fraction assigned to medium-shot region
+    tail : str
+        Tail definition:
+            "high"  -> few = highest targets (default)
+            "low"   -> few = lowest targets
+            "both"  -> few = both extreme tails (symmetric)
+
+    Returns
+    -------
+    DataFrame with added columns: many, med, few
+    """
+
+    if many_frac <= 0 or med_frac < 0 or many_frac + med_frac >= 1:
+        raise ValueError("Require: many_frac > 0, med_frac >= 0, and many_frac + med_frac < 1.")
+
+    if tail not in {"high", "low", "both"}:
+        raise ValueError("tail must be one of: 'high', 'low', 'both'")
+
+    df = df_inp.copy()
+    y = df[trg_col]
+
+    few_frac = 1.0 - (many_frac + med_frac)
+
+    df[["many", "med", "few"]] = 0
+
+    # ---------- ONE-SIDED: HIGH ----------
+    if tail == "high":
+        q_many = y.quantile(many_frac)
+        q_med  = y.quantile(many_frac + med_frac)
+
+        df.loc[y <= q_many, "many"] = 1
+        df.loc[(y > q_many) & (y <= q_med), "med"] = 1
+        df.loc[y > q_med, "few"] = 1
+
+    # ---------- ONE-SIDED: LOW ----------
+    elif tail == "low":
+        q_few = y.quantile(few_frac)
+        q_med = y.quantile(few_frac + med_frac)
+
+        df.loc[y <= q_few, "few"] = 1
+        df.loc[(y > q_few) & (y <= q_med), "med"] = 1
+        df.loc[y > q_med, "many"] = 1
+
+    # ---------- TWO-SIDED ----------
+    else:  # both
+        q1 = few_frac / 2
+        q2 = q1 + med_frac / 2
+        q3 = 1 - q2
+        q4 = 1 - q1
+
+        b1, b2, b3, b4 = y.quantile([q1, q2, q3, q4]).to_list()
+
+        few_mask  = (y <= b1) | (y >= b4)
+        many_mask = (y > b2) & (y < b3)
+        med_mask  = ~(few_mask | many_mask)
+
+        df.loc[few_mask, "few"] = 1
+        df.loc[many_mask, "many"] = 1
+        df.loc[med_mask, "med"] = 1
+
+    return df
+
+
 def add_shots(df_inp, trg_col="GroundTruth",
               many_threshold=0.6, med_threshold=0.3):
     """
