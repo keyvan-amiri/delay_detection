@@ -15,11 +15,13 @@ warnings.filterwarnings("ignore")
 
 from src.utils.set_args import define_experiments, handle_experiment
 from src.utils.set_args import add_arguments, get_logger, get_num_component
+from src.utils.set_args import update_paths_for_sampling
 from src.utils.import_log import get_event_log
 from src.utils.pipeline import conduct_HPO, train_evaluate_best_model
 from src.utils.utils import weighted_metrics
 #from src.utils.case_durations import get_case_duration, analyze_delays
 from src.LSTM.Preprocess_DALSTM import DALSTM_preprocessing
+from src.utils.smogn import smogn_augment_and_save
 
 
 def main():
@@ -33,10 +35,12 @@ def main():
     parser.add_argument('--overwrite', action='store_true', default=False, 
                         help='Repeat preprocessing for an existing dataset')
     parser.add_argument('--num_seeds', type=int, default=5)
-    # TODO: add SMOTE-based approaches if necessary
     parser.add_argument('--IR', type=str, default='Vanilla',
                         choices=['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA', 'GMM'],
                         help='Imbalanced Regression Approach to use')   
+    parser.add_argument('--sampling', type=str, default='None',
+                        choices=['None', 'SMOGN'],
+                        help='Sampling-based oversampling approach (pre-processing)')
     parser.add_argument('--heteroscedastic', action='store_true', default=False, 
                         help='Whether to use heteroscedastic regression')    
     args = parser.parse_args()
@@ -49,7 +53,11 @@ def main():
     log, log_ids = get_event_log(args, cfg)
     # training and inference pipeline
     if args.model == 'DALSTM':
-        DALSTM_preprocessing (log, log_ids, args, overwrite=args.overwrite)    
+        DALSTM_preprocessing (log, log_ids, args, overwrite=args.overwrite)
+    # Apply SMOGN oversampling on training data (if requested)
+    if args.sampling == 'SMOGN':
+        smogn_augment_and_save(args, overwrite=args.overwrite)
+        args = update_paths_for_sampling(args)
     ovarall_result_name = args.dataset+'_'+args.model+'_overall_results.pkl'
     ovarall_result_path = os.path.join(args.result_path, ovarall_result_name)
     lock_path = ovarall_result_path + ".lock"
@@ -90,9 +98,11 @@ def main():
             gmm_dict['SERA'] = (np.mean(sera_lst), np.std(sera_lst))
             best_par_lst.append(best_parameters)
             metric_lst.append(gmm_dict)
-        exp_dict = weighted_metrics(metric_lst, gmm_freq_lst)    
-        results[(args.IR, smooth)] = {'best_params': best_par_lst,
-                                      'performance': exp_dict}
+        exp_dict = weighted_metrics(metric_lst, gmm_freq_lst)
+        sampling_tag = getattr(args, 'sampling', 'None')
+        results[(args.IR, smooth, sampling_tag)] = {
+            'best_params': best_par_lst,
+            'performance': exp_dict}
     tmp_path = ovarall_result_path + ".tmp"
     with open(tmp_path, "wb") as f:
         pickle.dump(results, f)

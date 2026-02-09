@@ -90,10 +90,40 @@ def add_DALSTM_paths(args):
         args.process_path, "DALSTM_test_cases_"+args.dataset+".pkl")
     args.input_size_path = os.path.join(
         args.process_path, "DALSTM_input_size_"+args.dataset+".pkl")
+    # SMOGN-augmented paths (always defined; only used when sampling is active)
+    args.X_train_smogn_path = os.path.join(
+        args.process_path, "DALSTM_X_train_SMOGN_"+args.dataset+".pt")
+    args.y_train_smogn_path = os.path.join(
+        args.process_path, "DALSTM_y_train_SMOGN_"+args.dataset+".pt")
+    args.z_train_smogn_path = os.path.join(
+        args.process_path, "DALSTM_z_train_SMOGN_"+args.dataset+".pt")
+    args.z_test_smogn_path = os.path.join(
+        args.process_path, "DALSTM_z_test_SMOGN_"+args.dataset+".pt")
+    return args
+
+
+def update_paths_for_sampling(args):
+    """Redirect training tensor paths to SMOGN-augmented versions.
+
+    X/y for validation and test remain unchanged so that evaluation is
+    always performed on the original (non-augmented) data.  The GMM
+    component labels (z_train, z_test) are redirected because the mixture
+    model is re-fitted on the augmented training distribution.
+    """
+    if getattr(args, 'sampling', 'None') == 'SMOGN':
+        args.X_train_path = args.X_train_smogn_path
+        args.y_train_path = args.y_train_smogn_path
+        args.z_train_path = args.z_train_smogn_path
+        args.z_test_path = args.z_test_smogn_path
     return args
 
 def handle_experiment(args, exp_str):
-    args.model_name = args.dataset+'_'+args.model+'_'+args.IR+'_'+exp_str+'_'
+    sampling_tag = getattr(args, 'sampling', 'None')
+    if sampling_tag != 'None':
+        args.model_name = (args.dataset + '_' + args.model + '_' + args.IR
+                           + '_' + sampling_tag + '_' + exp_str + '_')
+    else:
+        args.model_name = args.dataset+'_'+args.model+'_'+args.IR+'_'+exp_str+'_'
     # args.LDS = True: Use Label Distribution Smoothing
     # args.LDS = True: Use Feature Distribution Smoothing
     if exp_str == 'wos':
