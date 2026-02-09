@@ -3,6 +3,7 @@
 Created on Wed Sep 10 07:50:00 2025
 @author: Keyvan Amiri Elyasi
 """
+import os
 import numpy as np
 import pandas as pd
 import torch
@@ -15,6 +16,7 @@ from src.LSTM.Load_DALSTM import remove_small_values, check_processed_tensors
 from src.utils.case_durations import expand_case_ids
 from src.utils.GMM import fit_label_gmm
 from src.utils.GMM import train_lstm_and_predict_test_components
+from src.utils.utils import add_shots_quantile
 
 
 class DALSTM_preprocessing ():      
@@ -158,3 +160,107 @@ class DALSTM_preprocessing ():
         torch.save(z_val, self.args.z_val_path)
         torch.save(z_test, self.args.z_test_path)
         print('Preprocessing is done.')
+
+
+def _get_base_paths(args):
+    """Reconstruct the base (unfiltered) tensor paths for the dataset."""
+    pp = args.process_path
+    ds = args.dataset
+    return {
+        'X_train': os.path.join(pp, f"DALSTM_X_train_{ds}.pt"),
+        'X_val':   os.path.join(pp, f"DALSTM_X_val_{ds}.pt"),
+        'X_test':  os.path.join(pp, f"DALSTM_X_test_{ds}.pt"),
+        'y_train': os.path.join(pp, f"DALSTM_y_train_{ds}.pt"),
+        'y_val':   os.path.join(pp, f"DALSTM_y_val_{ds}.pt"),
+        'y_test':  os.path.join(pp, f"DALSTM_y_test_{ds}.pt"),
+        'z_train': os.path.join(pp, f"DALSTM_z_train_{ds}.pt"),
+        'z_val':   os.path.join(pp, f"DALSTM_z_val_{ds}.pt"),
+        'z_test':  os.path.join(pp, f"DALSTM_z_test_{ds}.pt"),
+        'test_length': os.path.join(pp, f"DALSTM_test_length_list_{ds}.pkl"),
+        'test_cases':  os.path.join(pp, f"DALSTM_test_cases_{ds}.pkl"),
+        'input_size':  os.path.join(pp, f"DALSTM_input_size_{ds}.pkl"),
+    }
+
+
+def filter_and_save_subset(args, overwrite=False):
+    """
+    Load full preprocessed tensors, filter by the frequency subset
+    specified in args.subset (many/med/few), and save to subset-specific
+    paths (already set in args by update_paths_for_subset).
+    """
+    subset = args.subset
+    # Check if subset files already exist
+    subset_files = [args.X_train_path, args.X_val_path, args.X_test_path,
+                    args.y_train_path, args.y_val_path, args.y_test_path,
+                    args.test_length_path, args.input_size_path]
+    if not overwrite and all(os.path.exists(f) for f in subset_files):
+        print(f"Subset '{subset}' files already exist — skipping filtering.")
+        return
+
+    # Load full (unfiltered) tensors from base paths
+    bp = _get_base_paths(args)
+    X_train = torch.load(bp['X_train'], weights_only=True)
+    X_val   = torch.load(bp['X_val'],   weights_only=True)
+    X_test  = torch.load(bp['X_test'],  weights_only=True)
+    y_train = torch.load(bp['y_train'], weights_only=True)
+    y_val   = torch.load(bp['y_val'],   weights_only=True)
+    y_test  = torch.load(bp['y_test'],  weights_only=True)
+    z_train = torch.load(bp['z_train'], weights_only=True)
+    z_val   = torch.load(bp['z_val'],   weights_only=True)
+    z_test  = torch.load(bp['z_test'],  weights_only=True)
+
+    with open(bp['test_length'], 'rb') as f:
+        test_lengths = pickle.load(f)
+    with open(bp['test_cases'], 'rb') as f:
+        test_cases = pickle.load(f)
+    with open(bp['input_size'], 'rb') as f:
+        input_size = pickle.load(f)
+
+    # Combine all targets to compute consistent quantile thresholds
+    y_all = torch.cat([y_train, y_val, y_test])
+    df_all = pd.DataFrame({'GroundTruth': y_all.numpy()})
+    df_all = add_shots_quantile(df_all)
+
+    mask = df_all[subset].values == 1
+    n_train, n_val = len(y_train), len(y_val)
+
+    train_mask = torch.tensor(mask[:n_train])
+    val_mask   = torch.tensor(mask[n_train:n_train + n_val])
+    test_mask  = torch.tensor(mask[n_train + n_val:])
+
+    # Filter tensors
+    X_train = X_train[train_mask]
+    y_train = y_train[train_mask]
+    z_train = z_train[train_mask]
+    X_val   = X_val[val_mask]
+    y_val   = y_val[val_mask]
+    z_val   = z_val[val_mask]
+    X_test  = X_test[test_mask]
+    y_test  = y_test[test_mask]
+    z_test  = z_test[test_mask]
+
+    # Filter test metadata
+    test_mask_np = test_mask.numpy()
+    test_lengths = [l for l, m in zip(test_lengths, test_mask_np) if m]
+    test_cases   = [c for c, m in zip(test_cases, test_mask_np) if m]
+
+    print(f"Subset '{subset}' filtering done: "
+          f"train={len(y_train)}, val={len(y_val)}, test={len(y_test)}")
+
+    # Save to subset-specific paths
+    torch.save(X_train, args.X_train_path)
+    torch.save(X_val,   args.X_val_path)
+    torch.save(X_test,  args.X_test_path)
+    torch.save(y_train, args.y_train_path)
+    torch.save(y_val,   args.y_val_path)
+    torch.save(y_test,  args.y_test_path)
+    torch.save(z_train, args.z_train_path)
+    torch.save(z_val,   args.z_val_path)
+    torch.save(z_test,  args.z_test_path)
+
+    with open(args.test_length_path, 'wb') as f:
+        pickle.dump(test_lengths, f)
+    with open(args.test_cases_path, 'wb') as f:
+        pickle.dump(test_cases, f)
+    with open(args.input_size_path, 'wb') as f:
+        pickle.dump(input_size, f)

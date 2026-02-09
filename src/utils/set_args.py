@@ -93,7 +93,8 @@ def add_DALSTM_paths(args):
     return args
 
 def handle_experiment(args, exp_str):
-    args.model_name = args.dataset+'_'+args.model+'_'+args.IR+'_'+exp_str+'_'
+    subset_str = '' if args.subset == 'all' else args.subset + '_'
+    args.model_name = args.dataset+'_'+args.model+'_'+subset_str+args.IR+'_'+exp_str+'_'
     # args.LDS = True: Use Label Distribution Smoothing
     # args.LDS = True: Use Feature Distribution Smoothing
     if exp_str == 'wos':
@@ -128,6 +129,28 @@ def get_logger(args):
     file_handler_par.setFormatter(formatter)
     logger_par.addHandler(file_handler_par)
     return logger_par
+
+def update_paths_for_subset(args):
+    """Update all DALSTM tensor/metadata paths to include the subset label."""
+    subset = args.subset
+    def _add_subset(path):
+        base, ext = os.path.splitext(path)
+        return f"{base}_{subset}{ext}"
+    if args.model == 'DALSTM':
+        args.X_train_path = _add_subset(args.X_train_path)
+        args.X_val_path = _add_subset(args.X_val_path)
+        args.X_test_path = _add_subset(args.X_test_path)
+        args.y_train_path = _add_subset(args.y_train_path)
+        args.y_val_path = _add_subset(args.y_val_path)
+        args.y_test_path = _add_subset(args.y_test_path)
+        args.z_train_path = _add_subset(args.z_train_path)
+        args.z_val_path = _add_subset(args.z_val_path)
+        args.z_test_path = _add_subset(args.z_test_path)
+        args.test_length_path = _add_subset(args.test_length_path)
+        args.test_cases_path = _add_subset(args.test_cases_path)
+        args.input_size_path = _add_subset(args.input_size_path)
+    return args
+
 
 def get_num_component(args):   
     if args.IR == 'GMM':

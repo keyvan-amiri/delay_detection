@@ -5,7 +5,6 @@ Created on Mon Feb  2 09:44:50 2026
 @author: kamirel
 """
 import os
-import yaml
 import argparse
 import pickle
 import numpy as np
@@ -13,8 +12,8 @@ import pandas as pd
 from filelock import FileLock
 
 from src.utils.utils import add_shots_quantile
-from src.utils.loss_functions import sera_loss    
-from src.utils.set_args import define_experiments, handle_experiment
+from src.utils.loss_functions import sera_loss
+from src.utils.set_args import generate_seeds
 
 
 def get_smooth_list(IR: str):
@@ -74,21 +73,15 @@ def main():
     parser.add_argument("--num_seeds", type=int, default=5)
     parser.add_argument("--overwrite", action="store_true", default=False,
                         help="Overwrite existing (IR,smooth) keys too; default only fills missing.")
-    parser.add_argument('--cfg', default=None)   
+    parser.add_argument('--subset', type=str, default='all',
+                        choices=['all', 'many', 'med', 'few'],
+                        help='Retrieve results for a specific frequency subset')
     
     args = parser.parse_args()
     args.root_path = os.getcwd()
-    cfg_file = args.cfg if args.cfg is not None else args.dataset + '.yaml' 
-    with open(os.path.join(args.root_path, 'cfg', cfg_file) , 'r') as f:
-        cfg = yaml.safe_load(f)
-    args, _, _ = define_experiments(args)
-    args = add_arguments(args, cfg)
-    
 
-    
-
-    # Your seed list
-    seeds = [409, 1824, 3657, 4012, 4506][:args.num_seeds]
+    # Use the same seed generation as main.py
+    seeds = generate_seeds(args.num_seeds)
 
     IR_techs = ["Vanilla", "CSW", "EAL", "BMSE", "SERA"]
 
@@ -96,7 +89,8 @@ def main():
     result_dir = os.path.join(root_path, "results", args.model, args.dataset)
     data_dir = os.path.join(root_path, "temp", args.model, args.dataset)
 
-    overall_name = f"{args.dataset}_{args.model}_overall_results.pkl"
+    subset_str = '' if args.subset == 'all' else '_' + args.subset
+    overall_name = f"{args.dataset}_{args.model}{subset_str}_overall_results.pkl"
     overall_path = os.path.join(result_dir, overall_name)
     lock_path = overall_path + ".lock"
     tmp_path = overall_path + ".tmp"
@@ -127,7 +121,8 @@ def main():
             per_seed_metrics = []
 
             for seed in seeds:
-                model_prefix = f"{args.dataset}_{args.model}_{IR}_{smooth}_"
+                subset_prefix = '' if args.subset == 'all' else args.subset + '_'
+                model_prefix = f"{args.dataset}_{args.model}_{subset_prefix}{IR}_{smooth}_"
                 csv_name = f"{model_prefix}seed{seed}_inference.csv"
                 csv_path = os.path.join(result_dir, csv_name)
 
@@ -167,6 +162,25 @@ def main():
     print(f"Skipped existing keys: {skipped_existing}")
     print(f"Missing/unreadable CSV count: {missing_csv}")
     print(f"Saved: {overall_path}")
+
+    # Print results table to terminal
+    print("\n" + "=" * 80)
+    subset_label = f" (subset: {args.subset})" if args.subset != 'all' else ""
+    print(f"Results for {args.dataset} / {args.model}{subset_label}")
+    print("=" * 80)
+    print(f"{'IR':<10} {'Smooth':<10} {'MAE':>14} {'MAE-Many':>14} "
+          f"{'MAE-Med':>14} {'MAE-Few':>14} {'SERA':>14}")
+    print("-" * 80)
+    for (ir, smooth), data in sorted(overall_results.items()):
+        perf = data["performance"]
+        def fmt(key):
+            m, s = perf.get(key, (np.nan, np.nan))
+            if np.isnan(m):
+                return f"{'N/A':>14}"
+            return f"{m:.4f}±{s:.4f}"
+        print(f"{ir:<10} {smooth:<10} {fmt('MAE'):>14} {fmt('MAE-Many'):>14} "
+              f"{fmt('MAE-Med'):>14} {fmt('MAE-Few'):>14} {fmt('SERA'):>14}")
+    print("=" * 80)
 
 
 if __name__ == "__main__":

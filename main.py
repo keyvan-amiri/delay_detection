@@ -15,11 +15,12 @@ warnings.filterwarnings("ignore")
 
 from src.utils.set_args import define_experiments, handle_experiment
 from src.utils.set_args import add_arguments, get_logger, get_num_component
+from src.utils.set_args import update_paths_for_subset
 from src.utils.import_log import get_event_log
 from src.utils.pipeline import conduct_HPO, train_evaluate_best_model
 from src.utils.utils import weighted_metrics
 #from src.utils.case_durations import get_case_duration, analyze_delays
-from src.LSTM.Preprocess_DALSTM import DALSTM_preprocessing
+from src.LSTM.Preprocess_DALSTM import DALSTM_preprocessing, filter_and_save_subset
 
 
 def main():
@@ -38,7 +39,10 @@ def main():
                         choices=['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA', 'GMM'],
                         help='Imbalanced Regression Approach to use')   
     parser.add_argument('--heteroscedastic', action='store_true', default=False, 
-                        help='Whether to use heteroscedastic regression')    
+                        help='Whether to use heteroscedastic regression')
+    parser.add_argument('--subset', type=str, default='all',
+                        choices=['all', 'many', 'med', 'few'],
+                        help='Filter dataset to a frequency subset (many/med/few) before training')
     args = parser.parse_args()
     args.root_path = os.getcwd()
     cfg_file = args.cfg if args.cfg is not None else args.dataset + '.yaml'       
@@ -49,8 +53,13 @@ def main():
     log, log_ids = get_event_log(args, cfg)
     # training and inference pipeline
     if args.model == 'DALSTM':
-        DALSTM_preprocessing (log, log_ids, args, overwrite=args.overwrite)    
-    ovarall_result_name = args.dataset+'_'+args.model+'_overall_results.pkl'
+        DALSTM_preprocessing (log, log_ids, args, overwrite=args.overwrite)
+    # Filter dataset to a frequency subset if requested
+    if args.subset != 'all':
+        update_paths_for_subset(args)
+        filter_and_save_subset(args, overwrite=args.overwrite)
+    subset_str = '' if args.subset == 'all' else '_' + args.subset
+    ovarall_result_name = args.dataset+'_'+args.model+subset_str+'_overall_results.pkl'
     ovarall_result_path = os.path.join(args.result_path, ovarall_result_name)
     lock_path = ovarall_result_path + ".lock"
     tmp_path  = ovarall_result_path + ".tmp"
