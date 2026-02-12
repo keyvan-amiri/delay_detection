@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 from src.utils.fds import FDS
-from src.LSTM.model_stochasticDALSTM import DALSTMModelMve
+from src.LSTM.model_stochasticDALSTM import DALSTMModelMve, DALSTMModelGamma
 
 def get_DALSTM_model(args, cfg, device=None):
     with open(args.input_size_path, 'rb') as f:
@@ -43,6 +43,11 @@ def get_DALSTM_model(args, cfg, device=None):
         ).to(device)
     elif args.bmse:
         model = DALSTMModelBMC(
+            input_size=input_size, hidden_size=hidden_size,
+            n_layers=n_layers, dropout=dropout, p_fix=dropout_prob
+        ).to(device)
+    elif args.gamma_nll:
+        model = DALSTMModelGamma(
             input_size=input_size, hidden_size=hidden_size,
             n_layers=n_layers, dropout=dropout, p_fix=dropout_prob
         ).to(device)

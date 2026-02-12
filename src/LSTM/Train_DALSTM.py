@@ -10,9 +10,11 @@ from torch.nn.utils import clip_grad_norm_
 
 def train_epoch(model, train_loader, criterion, optimizer, epoch,
                 bmse=False, fds_model=False, heteroscedastic=False,
+                gamma_nll=False,
                 clip_grad_norm=False, clip_value=None, fds_config=None,
                 device=None):
     model.train()
+    distributional = heteroscedastic or gamma_nll
     # Collect for FDS stats only when needed
     all_features = []
     all_labels_bucket = []
@@ -22,11 +24,11 @@ def train_epoch(model, train_loader, criterion, optimizer, epoch,
         weights = batch[2].to(device)   # [B] (or broadcastable)
         optimizer.zero_grad(set_to_none=True)
         # -------------------------
-        # 1) Heteroscedastic (MVE)
+        # 1) Distributional: Heteroscedastic (MVE) or Gamma NLL
         # -------------------------
-        if heteroscedastic:
+        if distributional:
             mean, log_var = model(inputs)  # both [B]
-            loss = criterion(mean, targets, log_var)
+            loss = criterion(mean, targets, log_var, weights)
         # -------------------------
         # 2) FDS + BMSE (scalar noise_var)
         # -------------------------
@@ -90,18 +92,19 @@ def train_epoch(model, train_loader, criterion, optimizer, epoch,
 
 def validate_epoch(model, val_loader, criterion, epoch,
                    bmse=False, fds_model=False, heteroscedastic=False,
-                   device=None):
+                   gamma_nll=False, device=None):
     model.eval()
+    distributional = heteroscedastic or gamma_nll
     total_valid_loss = 0.0
     with torch.no_grad():
         for batch in val_loader:
             inputs  = batch[0].to(device)
             targets = batch[1].to(device)   # [B]
             weights = batch[2].to(device)   # [B] or broadcastable
-            # 1) Heteroscedastic (per-sample logvar)
-            if heteroscedastic:
+            # 1) Distributional: Heteroscedastic or Gamma NLL
+            if distributional:
                 mean, log_var = model(inputs)          # both [B]
-                valid_loss = criterion(mean, targets, log_var)
+                valid_loss = criterion(mean, targets, log_var, weights)
             # 2) FDS + BMSE (scalar noise_var)
             elif fds_model and bmse:
                 batch_results = model(inputs, targets, epoch)
@@ -129,7 +132,8 @@ def validate_epoch(model, val_loader, criterion, epoch,
 def DALSTM_inference(model, checkpoint, inference_loader, all_results,
                      test_lengths, test_cases,
                      bmse=False, fds_model=False, heteroscedastic=False,
-                     val_mode=False, device=None):
+                     gamma_nll=False, val_mode=False, device=None):
+    distributional = heteroscedastic or gamma_nll
     length_idx = 0
     with torch.no_grad():
         for test_batch in inference_loader:
@@ -143,7 +147,13 @@ def DALSTM_inference(model, checkpoint, inference_loader, all_results,
             elif bmse:
                 # BMSE: mean + scalar noise_var (ignore noise at inference)
                 y_pred, noise_var = model(inputs)                   # y_pred [B], noise_var scalar
-
+            elif gamma_nll:
+                y_pred, log_alpha = model(inputs)                   # both [B]
+                # Gamma: std = mu / sqrt(alpha)
+                alpha = torch.exp(log_alpha).clamp(min=0.1)
+                aleatoric_std = y_pred / torch.sqrt(alpha)
+                epistemic_std = torch.zeros_like(aleatoric_std)
+                total_std = torch.sqrt(epistemic_std**2 + aleatoric_std**2)
             elif heteroscedastic:
                 y_pred, log_var = model(inputs)                     # both [B]
                 aleatoric_std = torch.sqrt(torch.exp(log_var))
@@ -170,7 +180,7 @@ def DALSTM_inference(model, checkpoint, inference_loader, all_results,
                 all_results["Prefix_length"].extend(np.array(pre_lengths).reshape(-1, 1).tolist())
                 all_results["Case_id"].extend(np.array(pre_cases).reshape(-1, 1).tolist())
                 length_idx += batch_size
-            if heteroscedastic:
+            if distributional:
                 all_results["Epistemic_Uncertainty"].extend(epistemic_std.detach().cpu().numpy().tolist())
                 all_results["Aleatoric_Uncertainty"].extend(aleatoric_std.detach().cpu().numpy().tolist())
                 all_results["Total_Uncertainty"].extend(total_std.detach().cpu().numpy().tolist())

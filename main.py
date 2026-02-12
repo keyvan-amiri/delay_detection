@@ -38,8 +38,12 @@ def main():
                         choices=['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA', 'GMM'],
                         help='Imbalanced Regression Approach to use')   
     parser.add_argument('--heteroscedastic', action='store_true', default=False, 
-                        help='Whether to use heteroscedastic regression')    
+                        help='Whether to use heteroscedastic regression (Gaussian NLL)')
+    parser.add_argument('--gamma_nll', action='store_true', default=False,
+                        help='Whether to use Gamma NLL loss (assumes Gamma distribution for remaining time)')
     args = parser.parse_args()
+    if args.heteroscedastic and args.gamma_nll:
+        parser.error("--heteroscedastic and --gamma_nll are mutually exclusive")
     args.root_path = os.getcwd()
     cfg_file = args.cfg if args.cfg is not None else args.dataset + '.yaml'       
     with open(os.path.join(args.root_path, 'cfg', cfg_file) , 'r') as f:

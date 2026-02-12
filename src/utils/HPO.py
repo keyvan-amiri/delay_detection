@@ -12,6 +12,9 @@ def get_hpo_params(args):
              "value_type": "float", "log_scale": True}
     beta_sp  = {"name": "focal_beta",  "type": "fixed", "value": 0.2, "value_type": "float"}
     gamma_sp = {"name": "focal_gamma", "type": "fixed", "value": 1.0, "value_type": "float"}
+    # When gamma_nll or heteroscedastic is active, the distributional loss
+    # overrides loss_func in set_loss(), so fix it to avoid wasting HPO budget.
+    distributional = getattr(args, 'gamma_nll', False) or getattr(args, 'heteroscedastic', False)
     if args.IR in {'Vanilla', 'GMM'}:
         weight_sp = {"name": "reweight", "type": "fixed", "value": "none",
                      "value_type": "str"}
@@ -21,18 +24,27 @@ def get_hpo_params(args):
     elif args.IR == 'CSW':
         weight_sp = {"name": "reweight", "type": "choice",
                      "values": ["sqrt_inv", "inverse"], "value_type": "str"}
-        loss_sp = {"name": "loss_func", "type": "choice",
-                   "values": ["mae", "mse", "huber"], "value_type": "str"}
+        if distributional:
+            # loss_func is overridden by the distributional head; fix it
+            loss_sp = {"name": "loss_func", "type": "fixed", "value": "mae",
+                       "value_type": "str"}
+        else:
+            loss_sp = {"name": "loss_func", "type": "choice",
+                       "values": ["mae", "mse", "huber"], "value_type": "str"}
     elif args.IR == 'EAL':
         weight_sp = {"name": "reweight", "type": "choice",
                      "values": ["inverse"], "value_type": "str"}
-        loss_sp = {"name": "loss_func", "type": "choice",
-                   "values": ["focal_mae", "focal_mse"], "value_type": "str"}
-        # tune beta/gamma only for EAL
-        beta_sp = {"name": "focal_beta", "type": "range",
-                   "bounds": [1e-2, 1.0], "value_type": "float", "log_scale": True}
-        gamma_sp = {"name": "focal_gamma", "type": "range",
-                    "bounds": [0.5, 5.0], "value_type": "float"}
+        if distributional:
+            loss_sp = {"name": "loss_func", "type": "fixed", "value": "mae",
+                       "value_type": "str"}
+        else:
+            loss_sp = {"name": "loss_func", "type": "choice",
+                       "values": ["focal_mae", "focal_mse"], "value_type": "str"}
+            # tune beta/gamma only for EAL without distributional override
+            beta_sp = {"name": "focal_beta", "type": "range",
+                       "bounds": [1e-2, 1.0], "value_type": "float", "log_scale": True}
+            gamma_sp = {"name": "focal_gamma", "type": "range",
+                        "bounds": [0.5, 5.0], "value_type": "float"}
     elif args.IR == 'BMSE':
         weight_sp = {"name": "reweight", "type": "fixed", "value": "none",
                      "value_type": "str"}

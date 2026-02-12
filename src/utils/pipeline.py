@@ -69,7 +69,7 @@ def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):
         criterion = set_loss(args)     
         # Train with these parameters
         raw_data = train_with_hyperparams(
-            args, cfg, model, train_loader, val_loader, criterion, 
+            args, cfg, model, train_loader, val_loader, criterion,
             num_epochs=num_epochs, early_stop=early_stop,
             early_patience=early_patience, min_delta=min_delta,
             fds_config=fds_config, device=device, seed=seed, logger=logger)               
@@ -90,6 +90,7 @@ def train_with_hyperparams(
         min_delta=0, fds_config=None, device=None, clip_grad_norm=False,
         clip_value=None, seed=None, logger=None):    
     heteroscedastic = args.heteroscedastic
+    gamma_nll = args.gamma_nll
     bmse = args.bmse
     fds_model = args.FDS
     # define optimizer and scheduler
@@ -103,6 +104,7 @@ def train_with_hyperparams(
             loss = train_epoch(
                 model, train_loader, criterion, optimizer, epoch, bmse=bmse,
                 fds_model=fds_model, heteroscedastic=heteroscedastic,
+                gamma_nll=gamma_nll,
                 clip_grad_norm=clip_grad_norm, clip_value=clip_value,
                 fds_config=fds_config, device=device) 
         if (epoch + 1) % val_step == 0:
@@ -110,7 +112,7 @@ def train_with_hyperparams(
                 average_valid_loss = validate_epoch(
                     model, val_loader, criterion, epoch, bmse=bmse,
                     fds_model=fds_model, heteroscedastic=heteroscedastic,
-                    device=device)   
+                    gamma_nll=gamma_nll, device=device)   
             print(f'Epoch {epoch + 1}/{num_epochs},', 
                   f'Loss: {loss.item()}, Validation Loss: {average_valid_loss}')
             if logger is not None:
@@ -165,8 +167,10 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     criterion = set_loss(args)  
     # start training
     heteroscedastic = args.heteroscedastic
+    gamma_nll = args.gamma_nll
     bmse = args.bmse
     fds_model = args.FDS
+    distributional = heteroscedastic or gamma_nll
     # define optimizer and scheduler
     optimizer, scheduler = get_opt_schedule(args, cfg, model) 
     current_patience = 0
@@ -177,6 +181,7 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
             loss = train_epoch(
                 model, train_loader, criterion, optimizer, epoch, bmse=bmse,
                 fds_model=fds_model, heteroscedastic=heteroscedastic,
+                gamma_nll=gamma_nll,
                 clip_grad_norm=clip_grad_norm, clip_value=clip_value,
                 fds_config=fds_config, device=device)
         if (epoch + 1) % val_step == 0:
@@ -184,7 +189,7 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
                 average_valid_loss = validate_epoch(
                     model, val_loader, criterion, epoch, bmse=bmse,
                     fds_model=fds_model, heteroscedastic=heteroscedastic,
-                    device=device)   
+                    gamma_nll=gamma_nll, device=device)   
             print(f'Epoch {epoch + 1}/{num_epochs},', 
                   f'Loss: {loss.item()}, Validation Loss: {average_valid_loss}')
             if logger is not None:
@@ -216,7 +221,7 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     if logger is not None:
         logger.info(f'Training time- in seconds: {training_time}')
     start=datetime.now() # get start time (to compute inference time)
-    if heteroscedastic:
+    if distributional:
         all_results = {'GroundTruth': [], 'Prediction': [],
                        'Epistemic_Uncertainty': [], 'Aleatoric_Uncertainty': [],
                        'Total_Uncertainty': [], 'Absolute_error': []} 
@@ -237,7 +242,8 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     all_results = DALSTM_inference(
         model, checkpoint, inference_loader, all_results, test_lengths,
         test_cases, bmse=bmse, fds_model=fds_model,
-        heteroscedastic=heteroscedastic, val_mode=val_mode, device=device)
+        heteroscedastic=heteroscedastic, gamma_nll=gamma_nll,
+        val_mode=val_mode, device=device)
     inference_time = (datetime.now()-start).total_seconds()
     if not val_mode:
         # inference time is reported in milliseconds.

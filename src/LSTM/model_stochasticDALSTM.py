@@ -94,6 +94,81 @@ class DALSTMModelMve(nn.Module):
             return mu, logvar
         
 ##############################################################################
+# Data-aware LSTM model for Gamma NLL (mean + concentration heads)
+##############################################################################
+class DALSTMModelGamma(nn.Module):
+    """
+    DALSTM for Gamma NLL regression:
+      - predicts mu (positive mean, via softplus) per sample
+      - predicts log_alpha (log concentration/shape) per sample
+    At inference: point prediction = mu, uncertainty = mu / sqrt(alpha)
+    """
+    def __init__(self, input_size=None, hidden_size=None, n_layers=None,
+                 dropout=True, p_fix=0.2, return_squeezed=True):
+        super(DALSTMModelGamma, self).__init__()
+
+        self.n_layers = n_layers
+        self.hidden_size = hidden_size
+        self.dropout = dropout
+        self.return_squeezed = return_squeezed
+
+        # Create LSTM layers
+        self.lstm_layers = nn.ModuleList()
+        for i in range(n_layers):
+            input_dim = input_size if i == 0 else hidden_size
+            self.lstm_layers.append(
+                nn.LSTM(input_dim, hidden_size, batch_first=True)
+            )
+
+        # Layer normalization layers
+        self.layer_norms = nn.ModuleList([
+            nn.LayerNorm(hidden_size) for _ in range(n_layers)
+        ])
+
+        # Recurrent dropout
+        if self.dropout:
+            self.recurrent_dropout = nn.Dropout(p_fix)
+
+        # Two output heads: mean (mu) and log-concentration (log_alpha)
+        self.linear_mu = nn.Linear(hidden_size, 1)
+        self.linear_log_alpha = nn.Linear(hidden_size, 1)
+        # Softplus to ensure mu > 0
+        self.softplus = nn.Softplus()
+
+    def _apply_lstm_with_dropout(self, lstm, x, h_prev=None, c_prev=None):
+        """Apply LSTM with recurrent dropout to hidden states"""
+        batch_size = x.size(0)
+
+        if h_prev is None:
+            h = torch.zeros(1, batch_size, self.hidden_size, device=x.device)
+            c = torch.zeros(1, batch_size, self.hidden_size, device=x.device)
+        else:
+            h, c = h_prev, c_prev
+
+        if self.training and self.dropout:
+            h = self.recurrent_dropout(h)
+            c = self.recurrent_dropout(c)
+
+        return lstm(x, (h, c))
+
+    def forward(self, x):
+        x = x.float()
+        for i, (lstm, ln) in enumerate(zip(self.lstm_layers, self.layer_norms)):
+            x, (h, c) = self._apply_lstm_with_dropout(lstm, x)
+            x = ln(x)
+        # Last timestep representation
+        last_output = x[:, -1, :]
+
+        # Predict positive mean via softplus and log-concentration
+        mu = self.softplus(self.linear_mu(last_output))
+        log_alpha = self.linear_log_alpha(last_output)
+
+        if self.return_squeezed:
+            return mu.squeeze(dim=1), log_alpha.squeeze(dim=1)
+        else:
+            return mu, log_alpha
+
+##############################################################################
 # Stochastic Data-aware LSTM model with feature distribution smoothing
 ############################################################################## 
 class DALSTMFDSModelMve(nn.Module):

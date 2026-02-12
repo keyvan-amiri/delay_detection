@@ -5,6 +5,8 @@ import torch.nn.functional as F
 
 def set_loss(args):
     loss_func = args.loss
+    if args.gamma_nll:
+        return GammaNLLLoss()
     if args.heteroscedastic:
         return heteroscedastic_loss(metric=loss_func)
     if loss_func == 'bmse':
@@ -188,25 +190,77 @@ class heteroscedastic_loss(nn.Module):
         super(heteroscedastic_loss, self).__init__()
         self.metric = metric
         
-    def forward(self, mean, true, log_var):
+    def forward(self, mean, true, log_var, weights=None):
         '''
         ARGUMENTS:
         true: target values shape of: batch_size
         mean: predictions with shape of: batch_size
         log_var: Logaritms of uncertainty estimates. shape: batch_size
+        weights: optional per-sample weights (e.g. from CSW/EAL). shape: batch_size
         OUTPUTS:
         loss: Tensor (0)
         '''
         precision = torch.exp(-log_var)
         if self.metric == 'mae':
             # based on L1-loss and its relation to Laplace distribution
-            loss = torch.mean(precision**0.5 * torch.abs(true - mean) + log_var)
+            loss = precision**0.5 * torch.abs(true - mean) + log_var
         elif self.metric == 'mse':
-            loss = 0.5 * torch.mean(precision * (true - mean) ** 2 + log_var)
+            loss = 0.5 * (precision * (true - mean) ** 2 + log_var)
         else:
-            raise ValueError("Metric has to be 'mse' or 'mae'")            
-        return loss
+            raise ValueError("Metric has to be 'mse' or 'mae'")
+        if weights is not None:
+            loss = loss * weights.expand_as(loss)
+        return loss.mean()
     
+class GammaNLLLoss(nn.Module):
+    """
+    Negative log-likelihood loss assuming a Gamma distribution for the target.
+
+    The model outputs two heads:
+      - mu:        predicted mean remaining time (positive, via softplus in model)
+      - log_alpha: log of the shape/concentration parameter
+
+    Parameterization: Gamma(alpha, beta) with beta = alpha / mu
+      Mean  = alpha / beta = mu
+      Var   = alpha / beta^2 = mu^2 / alpha
+
+    NLL per sample:
+      -alpha * log(alpha/mu) + lgamma(alpha) - (alpha - 1) * log(y) + (alpha/mu) * y
+    """
+    def __init__(self, alpha_min=0.1, mu_min=1e-6, y_min=1e-6):
+        super().__init__()
+        self.alpha_min = alpha_min
+        self.mu_min = mu_min
+        self.y_min = y_min
+
+    def forward(self, mu, targets, log_alpha, weights=None):
+        """
+        ARGUMENTS:
+        mu:        predicted mean (positive), shape [B]
+        targets:   ground-truth remaining time (positive), shape [B]
+        log_alpha: log of shape parameter, shape [B]
+        weights:   optional per-sample weights (e.g. from CSW/EAL), shape [B]
+        OUTPUTS:
+        loss: scalar tensor
+        """
+        alpha = torch.exp(log_alpha).clamp(min=self.alpha_min)
+        mu = mu.clamp(min=self.mu_min)
+        y = targets.clamp(min=self.y_min)
+
+        beta = alpha / mu  # rate parameter
+
+        # NLL = -alpha*log(beta) + lgamma(alpha) - (alpha-1)*log(y) + beta*y
+        nll = (
+            -alpha * torch.log(beta)
+            + torch.lgamma(alpha)
+            - (alpha - 1.0) * torch.log(y)
+            + beta * y
+        )
+        if weights is not None:
+            nll = nll * weights.expand_as(nll)
+        return nll.mean()
+
+
 def mape(outputs, targets, epsilon=1e-8, threshold=1e-6):
     """
     # Custom function for Mean Absolute Percentage Error (MAPE)

@@ -14,7 +14,7 @@ from filelock import FileLock
 
 from src.utils.utils import add_shots_quantile
 from src.utils.loss_functions import sera_loss    
-from src.utils.set_args import define_experiments, handle_experiment
+from src.utils.set_args import handle_experiment
 
 
 def get_smooth_list(IR: str):
@@ -81,10 +81,6 @@ def main():
     cfg_file = args.cfg if args.cfg is not None else args.dataset + '.yaml' 
     with open(os.path.join(args.root_path, 'cfg', cfg_file) , 'r') as f:
         cfg = yaml.safe_load(f)
-    args, _, _ = define_experiments(args)
-    args = add_arguments(args, cfg)
-    
-
     
 
     # Your seed list
@@ -167,6 +163,31 @@ def main():
     print(f"Skipped existing keys: {skipped_existing}")
     print(f"Missing/unreadable CSV count: {missing_csv}")
     print(f"Saved: {overall_path}")
+
+    # Print results table
+    print(f"\n{'='*80}")
+    print(f"Results for {args.dataset} / {args.model}")
+    print(f"{'='*80}")
+    header = f"{'IR':<10} {'Smooth':<10} {'MAE':>14} {'MAE-Many':>14} {'MAE-Med':>14} {'MAE-Few':>14} {'SERA':>14}"
+    print(header)
+    print("-" * len(header))
+    for key in sorted(overall_results.keys(), key=str):
+        if not (isinstance(key, tuple) and len(key) == 2):
+            continue
+        ir, smooth = key
+        perf = overall_results[key].get("performance", {})
+        cols = []
+        for metric in ["MAE", "MAE-Many", "MAE-Med", "MAE-Few", "SERA"]:
+            if metric in perf:
+                mean, std = perf[metric]
+                if np.isnan(mean):
+                    cols.append(f"{'N/A':>14}")
+                else:
+                    cols.append(f"{mean:>7.3f}±{std:<5.3f}")
+            else:
+                cols.append(f"{'N/A':>14}")
+        print(f"{ir:<10} {smooth:<10} {''.join(cols)}")
+    print(f"{'='*80}")
 
 
 if __name__ == "__main__":
