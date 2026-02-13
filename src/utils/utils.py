@@ -3,8 +3,27 @@
 Created on Tue Sep  9 13:29:04 2025
 @author: Keyvan Amiri Elyasi
 """
+from filelock import FileLock
+import os, time, pickle
 import pandas as pd
 import numpy as np
+
+def safe_update_results(results_path, key, value, timeout=600):
+    lock_path = results_path + ".lock"
+    tmp_path = f"{results_path}.{os.getpid()}.{int(time.time()*1000)}.tmp"
+    with FileLock(lock_path, timeout=timeout):
+        # reload latest from disk (THIS is what prevents lost updates)
+        if os.path.exists(results_path):
+            with open(results_path, "rb") as f:
+                results = pickle.load(f)
+        else:
+            results = {}
+        # update only your key
+        results[key] = value
+        # atomic write
+        with open(tmp_path, "wb") as f:
+            pickle.dump(results, f)
+        os.replace(tmp_path, results_path)
 
 def add_shots_quantile(
     df_inp,

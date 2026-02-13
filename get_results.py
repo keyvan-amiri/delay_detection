@@ -74,7 +74,7 @@ def main():
         if args.model == 'DALSTM':
             DALSTM_preprocessing (log, log_ids, args, overwrite=args.overwrite) 
         if args.model == 'DALSTM':
-            (_, _, _, _, _, _, relevance_test) = load_DALSTM_data(args, cfg)
+            (_, _, _, _, _, _, relevance_test, meta) = load_DALSTM_data(args, cfg)
         smooth_lst = get_string(IR)
         for exp_str in smooth_lst:
             for seed in seeds:
@@ -87,13 +87,7 @@ def main():
                 except:
                     print(res_path)
 
-                
-        
-    
-    
-    
-    
-    
+
 
 if __name__ == '__main__':
     main() 

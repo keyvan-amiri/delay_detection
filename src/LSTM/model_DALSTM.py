@@ -6,6 +6,7 @@ Created on Mon Sep 22 09:04:23 2025
 import pickle
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.utils.fds import FDS
 from src.LSTM.model_stochasticDALSTM import DALSTMModelMve
@@ -46,6 +47,11 @@ def get_DALSTM_model(args, cfg, device=None):
             input_size=input_size, hidden_size=hidden_size,
             n_layers=n_layers, dropout=dropout, p_fix=dropout_prob
         ).to(device)
+    elif args.IR == 'quantile':
+        model = DALSTMQuantileModel(
+            input_size=input_size, hidden_size=hidden_size, n_layers=n_layers,
+            dropout=dropout, p_fix=dropout_prob,
+            quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99)).to(device)        
     elif args.heteroscedastic:
         model = DALSTMModelMve(
             input_size=input_size, hidden_size=hidden_size,
@@ -57,6 +63,7 @@ def get_DALSTM_model(args, cfg, device=None):
             n_layers=n_layers, dropout=dropout, p_fix=dropout_prob
         ).to(device)
     return model, fds_config
+
 
 ##############################################################################
 # Backbone Data-aware LSTM model for remaining time prediction
@@ -383,3 +390,104 @@ class DALSTMFDSModelBMC(nn.Module):
         inner_edges = self.fds_bin_edges[1:-1]
         b = torch.bucketize(y, inner_edges)
         return (b + bucket_start).clamp(bucket_start, bucket_num - 1).long()
+
+    
+##############################################################################
+# Data-aware LSTM model for quantile regression of remaining time prediction
+##############################################################################
+class MonotoneQuantileHead(nn.Module):
+    """
+    Outputs K non-decreasing quantiles by predicting:
+      - base = lowest quantile
+      - positive deltas for the remaining quantiles (softplus)
+      - quantiles = base + cumsum([0, deltas...])
+    """
+    def __init__(self, hidden_size: int, n_quantiles: int, min_delta: float = 1e-4):
+        super().__init__()
+        assert n_quantiles >= 2, "Need at least 2 quantiles for monotone head."
+        self.nq = n_quantiles
+        self.min_delta = min_delta
+        self.proj = nn.Linear(hidden_size, n_quantiles)
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        """
+        h: (B, H)
+        returns: (B, K) monotone quantile predictions
+        """
+        raw = self.proj(h)           # (B,K)
+        base = raw[:, :1]            # (B,1)
+        deltas = F.softplus(raw[:, 1:]) + self.min_delta  # (B,K-1), strictly > 0
+        q = torch.cat([base, base + torch.cumsum(deltas, dim=1)], dim=1)  # (B,K)
+        return q
+
+
+class DALSTMQuantileModel(nn.Module):
+    """
+    Your DALSTM backbone + monotone quantile head.
+    Quantiles: [0.1, 0.5, 0.6, 0.9, 0.95, 0.99] (K=6)
+    """
+    def __init__(self,
+                 input_size: int,
+                 hidden_size: int,
+                 n_layers: int,
+                 dropout: bool = True,
+                 p_fix: float = 0.2,
+                 exclude_last_layer: bool = False,
+                 return_squeezed: bool = False,
+                 quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99),
+                 min_delta: float = 1e-4):
+        super().__init__()
+
+        self.quantiles = tuple(float(q) for q in quantiles)
+        self.nq = len(self.quantiles)
+
+        self.n_layers = n_layers
+        self.hidden_size = hidden_size
+        self.exclude_last_layer = exclude_last_layer
+        self.return_squeezed = return_squeezed
+        self.dropout = dropout
+
+        # LSTM layers
+        self.lstm_layers = nn.ModuleList()
+        for i in range(n_layers):
+            input_dim = input_size if i == 0 else hidden_size
+            self.lstm_layers.append(nn.LSTM(input_dim, hidden_size, batch_first=True))
+        # LayerNorm 
+        self.layer_norms = nn.ModuleList([nn.LayerNorm(hidden_size) for _ in range(n_layers)])
+        # Recurrent dropout on (h,c)
+        if self.dropout:
+            self.recurrent_dropout = nn.Dropout(p_fix)
+        # Head
+        if not self.exclude_last_layer:
+            self.head = MonotoneQuantileHead(hidden_size, self.nq, min_delta=min_delta)
+            
+    def _apply_lstm_with_dropout(self, lstm, x, h_prev=None, c_prev=None):
+        batch_size = x.size(0)
+        if h_prev is None:
+            h = torch.zeros(1, batch_size, self.hidden_size, device=x.device)
+            c = torch.zeros(1, batch_size, self.hidden_size, device=x.device)
+        else:
+            h, c = h_prev, c_prev
+        if self.training and self.dropout:
+            h = self.recurrent_dropout(h)
+            c = self.recurrent_dropout(c)
+        return lstm(x, (h, c))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (B, T, F)
+        returns:
+          - if exclude_last_layer=False: (B, K) quantiles (monotone)
+          - else: (B, H) features from last timestep
+        """
+        x = x.float()
+        for lstm, ln in zip(self.lstm_layers, self.layer_norms):            
+            x, _ = self._apply_lstm_with_dropout(lstm, x)
+            x = ln(x)
+        last_output = x[:, -1, :]  # (B,H)
+        if self.exclude_last_layer:
+            return last_output
+        q_pred = self.head(last_output)  # (B,K), monotone by construction
+
+        if self.return_squeezed and self.nq == 1:
+            return q_pred.squeeze(dim=1)
+        return q_pred

@@ -4,11 +4,9 @@ Created on Tue Sep  9 12:25:40 2025
 @author: Keyvan Amiri Elyasi
 """
 from filelock import FileLock
-import os
-import argparse
-import yaml
+import os, time, pickle
+import argparse, yaml
 import numpy as np
-import pickle
 # TODO: deactivete filter warnings and solve them as much as possible
 import warnings
 warnings.filterwarnings("ignore")
@@ -17,7 +15,7 @@ from src.utils.set_args import define_experiments, handle_experiment
 from src.utils.set_args import add_arguments, get_logger, get_num_component
 from src.utils.import_log import get_event_log
 from src.utils.pipeline import conduct_HPO, train_evaluate_best_model
-from src.utils.utils import weighted_metrics
+from src.utils.utils import weighted_metrics, safe_update_results
 #from src.utils.case_durations import get_case_duration, analyze_delays
 from src.LSTM.Preprocess_DALSTM import DALSTM_preprocessing
 
@@ -35,8 +33,13 @@ def main():
     parser.add_argument('--num_seeds', type=int, default=5)
     # TODO: add SMOTE-based approaches if necessary
     parser.add_argument('--IR', type=str, default='Vanilla',
-                        choices=['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA', 'GMM'],
-                        help='Imbalanced Regression Approach to use')   
+                        choices=['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA',
+                                 'quantile', 'GMM'],
+                        help='Imbalanced Regression Approach to use')  
+    parser.add_argument('--log_trans', action='store_true', default=False, 
+                        help='Whether to use log transformation on target variable') 
+    parser.add_argument('--box_cox', action='store_true', default=False, 
+                        help='Whether to use Box-Cox transformation on target variable')     
     parser.add_argument('--heteroscedastic', action='store_true', default=False, 
                         help='Whether to use heteroscedastic regression')    
     args = parser.parse_args()
@@ -47,22 +50,16 @@ def main():
     args, exp_ids, smooth_str = define_experiments(args)
     args = add_arguments(args, cfg)
     log, log_ids = get_event_log(args, cfg)
-    # training and inference pipeline
+    # preprocessing
     if args.model == 'DALSTM':
         DALSTM_preprocessing (log, log_ids, args, overwrite=args.overwrite)    
     ovarall_result_name = args.dataset+'_'+args.model+'_overall_results.pkl'
-    ovarall_result_path = os.path.join(args.result_path, ovarall_result_name)
-    lock_path = ovarall_result_path + ".lock"
-    tmp_path  = ovarall_result_path + ".tmp"
-    with FileLock(lock_path, timeout=600):  # 10 min timeout
-        # reload latest results inside the lock (critical)
-        if os.path.exists(ovarall_result_path):
-            with open(ovarall_result_path, "rb") as f:
-                results = pickle.load(f)
-        else:
-            results = {}        
+    ovarall_result_path = os.path.join(args.result_path, ovarall_result_name) 
     gmm_freq_lst, distinct_labels = get_num_component(args)
     print(gmm_freq_lst, distinct_labels)
+    # ===============================
+    # experiment loop
+    # ===============================
     for exp_id, smooth in zip(exp_ids, smooth_str):
         args = handle_experiment(args, smooth)
         logger = get_logger(args)        
@@ -90,16 +87,22 @@ def main():
             gmm_dict['SERA'] = (np.mean(sera_lst), np.std(sera_lst))
             best_par_lst.append(best_parameters)
             metric_lst.append(gmm_dict)
-        exp_dict = weighted_metrics(metric_lst, gmm_freq_lst)    
-        results[(args.IR, smooth)] = {'best_params': best_par_lst,
-                                      'performance': exp_dict}
-    tmp_path = ovarall_result_path + ".tmp"
-    with open(tmp_path, "wb") as f:
-        pickle.dump(results, f)
-    os.replace(tmp_path, ovarall_result_path)  # atomic rename
-    # TODO: maybe in future delay analysis
-    #long_cases, prefix_time, min_delay = get_case_duration(args, log, log_ids)
-    #res_df = analyze_delays(args, predictions, prefix_time, min_delay, long_cases, seed=seed, logger=logger)
+        exp_dict = weighted_metrics(metric_lst, gmm_freq_lst) 
+        if args.log_trans:
+            IR_str  = args.IR + '_log'
+        elif args.box_cox: 
+            IR_str = args.IR + '_cox'
+        else:
+            IR_str = args.IR
+        key = (IR_str, smooth)
+        value = {'best_params': best_par_lst, 'performance': exp_dict}
+        # ===============================
+        # SAFE PARALLEL UPDATE (atomic)
+        # ===============================
+        safe_update_results(ovarall_result_path, key, value)
+        if logger is not None:
+            logger.info(f"Saved results for {key} safely.")
+    print("All experiments finished.")        
     
 if __name__ == '__main__':
     main()  

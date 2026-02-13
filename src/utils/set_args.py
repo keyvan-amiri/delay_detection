@@ -12,7 +12,7 @@ import torch
 def define_experiments(args):
     args.bmse = False
     args.sera = False
-    if args.IR in {'Vanilla', 'GMM'}:
+    if args.IR in {'Vanilla', 'quantile', 'GMM'}:
         exp_ids = [1]
         smooth_str = ['wos']
     elif args.IR in {'CSW', 'EAL'}:
@@ -39,6 +39,9 @@ def add_arguments(args, cfg):
     args.val_ratio = cfg['data']['val_ratio']
     # delay threshold (e.g., 10% of cases with longest durations)
     args.delay_thresh = cfg['data']['delay_thresh']
+    if args.log_trans and args.box_cox:
+        # Only one transformation at the time
+        args.box_cox = False   
     return args      
 
 
@@ -121,7 +124,12 @@ def get_logger(args):
     # Clear previous handlers
     if logger_par.hasHandlers():
         logger_par.handlers.clear()
-    logger_par_name = args.model_name + 'report.log'
+    if args.log_trans:
+        logger_par_name = args.model_name + '_logtrans_report.log'
+    elif args.box_cox:
+        logger_par_name =  args.model_name + '_box_cox_report.log'
+    else:
+        logger_par_name = args.model_name + 'report.log'
     logger_par_path = os.path.join(args.result_path, logger_par_name)
     file_handler_par = logging.FileHandler(logger_par_path)
     file_handler_par.setLevel(logging.INFO)
@@ -139,3 +147,38 @@ def get_num_component(args):
         distinct_labels = None
         gmm_freq_lst = [1.0]
     return gmm_freq_lst, distinct_labels
+
+def add_result_paths(args, val_mode, gmm_label, seed):
+    if val_mode:    
+        if args.IR == 'GMM':
+            if args.log_trans:
+                res_name = args.model_name+'logtrans_gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference_validation.csv'
+            elif args.box_cox:                
+                res_name = args.model_name+'boxcox_gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference_validation.csv'
+            else:
+                res_name = args.model_name+'gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference_validation.csv'
+        else:
+            if args.log_trans:
+                res_name = args.model_name+'logtrans_seed'+str(seed)+'_inference_validation.csv'
+            elif args.box_cox: 
+                res_name = args.model_name+'boxcox_seed'+str(seed)+'_inference_validation.csv'
+            else:                
+                res_name = args.model_name+'seed'+str(seed)+'_inference_validation.csv'
+        res_path = os.path.join(args.process_path, res_name)
+    else:
+        if args.IR == 'GMM':
+            if args.log_trans:
+                res_name = args.model_name+'logtrans_gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference.csv'
+            elif args.box_cox:
+                res_name = args.model_name+'boxcox_gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference.csv'
+            else:
+                res_name = args.model_name+'gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference.csv'
+        else:
+            if args.log_trans:
+                res_name = args.model_name+'logtrans_seed'+str(seed)+'_inference.csv'
+            elif args.box_cox:
+                res_name = args.model_name+'boxcox_seed'+str(seed)+'_inference.csv'
+            else:
+                res_name = args.model_name+'seed'+str(seed)+'_inference.csv'        
+        res_path = os.path.join(args.result_path, res_name)
+    return res_path

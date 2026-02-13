@@ -8,7 +8,8 @@ from datetime import datetime
 import pandas as pd
 import torch
 
-from src.utils.HPO import get_hpo_client
+from src.utils.HPO import get_hpo_client, decode_params
+#from src.utils.HPO import debug_trial_params
 from src.utils.optimizer import get_opt_schedule
 from src.LSTM.load_dataset import load_DALSTM_data, get_train_params
 from src.LSTM.model_DALSTM import get_DALSTM_model
@@ -17,10 +18,14 @@ from src.LSTM.Train_DALSTM import train_epoch, validate_epoch, DALSTM_inference
 from src.utils.utils import add_shots_quantile
 from src.utils.loss_functions import sera_loss
 from src.utils.fds import add_bin_edges
+from src.utils.set_args import add_result_paths
 
 def update_args(args, cfg, parameters):
     args.lr = parameters.get("lr")
     args.reweight = parameters.get("reweight")
+    if parameters["reweight"]=="none" and args.LDS:
+        # To combine Focal-R loss with LDS
+        args.reweight = "sqrt_inv"
     args.loss = parameters.get("loss_func")
     args.lds_kernel = parameters.get("lds_kernel")
     args.lds_ks = parameters.get("lds_ks")
@@ -34,6 +39,7 @@ def update_args(args, cfg, parameters):
     args.fds_start_smooth = cfg.get('imbalanced', {}).get('fds_start_smooth', 1) 
     args.focal_beta = parameters.get("focal_beta", 0.2)
     args.focal_gamma = parameters.get("focal_gamma", 1.0)
+    args.n_bins = parameters.get("n_bins", 20)
     args.extreme_type = parameters.get("extreme_type")
     args.asym = parameters.get("asym")   
     return args   
@@ -51,13 +57,16 @@ def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):
             logger.info(f'Running trial {i+1}') 
         # Get next parameters from AX, and extract parameters
         parameters, trial_index = ax_client.get_next_trial()
+        parameters = decode_params(parameters)
         args = update_args(args, cfg, parameters)      
         # Load data and define training parameters
         if args.model == 'DALSTM':
             if args.IR == 'GMM':
-                (train_loader, val_loader, _, _, _, _, _) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
+                (train_loader, val_loader, _, _, _, _, _, meta) = load_DALSTM_data(
+                    args, cfg, gmm_label=gmm_label)
             else:
-                (train_loader, val_loader, _, _, _, _, _) = load_DALSTM_data(args, cfg)
+                (train_loader, val_loader, _, _, _, _, _, meta) = load_DALSTM_data(
+                    args, cfg)
             (num_epochs, early_stop, early_patience, min_delta
              ) = get_train_params(cfg)
             # define model, and FDS configuration
@@ -66,17 +75,20 @@ def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):
             if args.FDS:
                 model = add_bin_edges(model, train_loader, val_loader, fds_config, device)
         # define loss function
-        criterion = set_loss(args)     
+        criterion = set_loss(args)
+        eval_criterion = set_loss(args, loss_func='mae')
         # Train with these parameters
         raw_data = train_with_hyperparams(
-            args, cfg, model, train_loader, val_loader, criterion, 
+            args, cfg, model, train_loader, val_loader, criterion, eval_criterion,
             num_epochs=num_epochs, early_stop=early_stop,
             early_patience=early_patience, min_delta=min_delta,
             fds_config=fds_config, device=device, seed=seed, logger=logger)               
         # Complete the trial
-        ax_client.complete_trial(trial_index=trial_index, raw_data=raw_data)    
+        ax_client.complete_trial(trial_index=trial_index, raw_data=raw_data) 
+        #debug_trial_params(ax_client)
     # Get best parameters
     best_parameters, values = ax_client.get_best_parameters()
+    best_parameters = decode_params(best_parameters)
     print(f"Best parameters: {best_parameters}")
     print(f"Best validation loss: {values[0]['valid_loss']}")
     if logger is not None:
@@ -85,13 +97,17 @@ def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):
     return best_parameters
 
 def train_with_hyperparams(
-        args, cfg, model, train_loader, val_loader, criterion,
+        args, cfg, model, train_loader, val_loader, criterion, eval_criterion,
         num_epochs=100, early_stop=True, early_patience=30,
         min_delta=0, fds_config=None, device=None, clip_grad_norm=False,
         clip_value=None, seed=None, logger=None):    
     heteroscedastic = args.heteroscedastic
     bmse = args.bmse
     fds_model = args.FDS
+    if args.IR == 'quantile':
+        quantile_regression=True
+    else:
+        quantile_regression=False
     # define optimizer and scheduler
     optimizer, scheduler = get_opt_schedule(args, cfg, model) 
     # Training loop
@@ -104,13 +120,14 @@ def train_with_hyperparams(
                 model, train_loader, criterion, optimizer, epoch, bmse=bmse,
                 fds_model=fds_model, heteroscedastic=heteroscedastic,
                 clip_grad_norm=clip_grad_norm, clip_value=clip_value,
-                fds_config=fds_config, device=device) 
+                fds_config=fds_config, quantile_regression=quantile_regression,
+                device=device) 
         if (epoch + 1) % val_step == 0:
             if args.model == 'DALSTM':
                 average_valid_loss = validate_epoch(
-                    model, val_loader, criterion, epoch, bmse=bmse,
-                    fds_model=fds_model, heteroscedastic=heteroscedastic,
-                    device=device)   
+                    model, val_loader, eval_criterion, epoch, hpo_mode=True,
+                    bmse=bmse, fds_model=fds_model, heteroscedastic=heteroscedastic,
+                    quantile_regression=quantile_regression, device=device)   
             print(f'Epoch {epoch + 1}/{num_epochs},', 
                   f'Loss: {loss.item()}, Validation Loss: {average_valid_loss}')
             if logger is not None:
@@ -129,9 +146,10 @@ def train_with_hyperparams(
     return {"valid_loss": (best_valid_loss, 0.0)}  
 
 
-def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
-                              clip_grad_norm=False, clip_value=None,
-                              val_mode=False, gmm_label=None):
+def train_evaluate_best_model(
+        args, cfg, best_params, seed=None, logger=None, clip_grad_norm=False,
+        clip_value=None, val_mode=False, gmm_label=None,
+        quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99)):
     ##########################################################################
     # Train
     ##########################################################################
@@ -146,14 +164,18 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     checkpoint_path = os.path.join(args.process_path, checkpoint_name)
     # set to the best hyper-parameters
     args = update_args(args, cfg, best_params)
+    if args.IR == 'quantile':
+        quantile_regression=True
+    else:
+        quantile_regression=False
     # Load data and define training parameters
     if args.model == 'DALSTM':
         if args.IR == 'GMM':
             (train_loader, val_loader, test_loader, test_lengths, test_cases,
-             relevance_val, relevance_test) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
+             relevance_val, relevance_test, meta) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
         else:
             (train_loader, val_loader, test_loader, test_lengths, test_cases,
-             relevance_val, relevance_test) = load_DALSTM_data(args, cfg)
+             relevance_val, relevance_test, meta) = load_DALSTM_data(args, cfg)
         (num_epochs, early_stop, early_patience, min_delta
          ) = get_train_params(cfg)
         # define model, and FDS configuration
@@ -178,13 +200,14 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
                 model, train_loader, criterion, optimizer, epoch, bmse=bmse,
                 fds_model=fds_model, heteroscedastic=heteroscedastic,
                 clip_grad_norm=clip_grad_norm, clip_value=clip_value,
-                fds_config=fds_config, device=device)
+                fds_config=fds_config, quantile_regression=quantile_regression,
+                device=device)
         if (epoch + 1) % val_step == 0:
             if args.model == 'DALSTM':
                 average_valid_loss = validate_epoch(
                     model, val_loader, criterion, epoch, bmse=bmse,
                     fds_model=fds_model, heteroscedastic=heteroscedastic,
-                    device=device)   
+                    quantile_regression=quantile_regression, device=device)   
             print(f'Epoch {epoch + 1}/{num_epochs},', 
                   f'Loss: {loss.item()}, Validation Loss: {average_valid_loss}')
             if logger is not None:
@@ -210,11 +233,11 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
             if scheduler is not None:
                 scheduler.step(average_valid_loss)
     training_time = (datetime.now()-start).total_seconds()
+    if logger is not None:
+        logger.info(f'Training time- in seconds: {training_time}')
     ##########################################################################
     # Inference
     ##########################################################################
-    if logger is not None:
-        logger.info(f'Training time- in seconds: {training_time}')
     start=datetime.now() # get start time (to compute inference time)
     if heteroscedastic:
         all_results = {'GroundTruth': [], 'Prediction': [],
@@ -223,6 +246,16 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     else:
         all_results = {'GroundTruth': [], 'Prediction': [], 
                        'Absolute_error': []}  
+    # If quantile regression, optionally pre-create columns (not required,
+    # because DALSTM_inference adds them if missing — but it's fine either way)
+    if quantile_regression:
+        for q in quantiles:
+            key = f"Q{str(q).replace('.', '_')}"  # e.g. Q0_95
+            all_results[key] = []
+        all_results["PI10"] = []
+        all_results["PI90"] = []
+        all_results["PI_Width_10_90"] = []
+        all_results["PI_Coverage_10_90"] = []
     # on test set, prefix length is added for earliness analysis
     if not val_mode:
         all_results['Case_id'] = [] 
@@ -235,9 +268,10 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     all_results = DALSTM_inference(
-        model, checkpoint, inference_loader, all_results, test_lengths,
-        test_cases, bmse=bmse, fds_model=fds_model,
-        heteroscedastic=heteroscedastic, val_mode=val_mode, device=device)
+        args, model, checkpoint, inference_loader, all_results, test_lengths,
+        test_cases, meta, bmse=bmse, fds_model=fds_model,
+        heteroscedastic=heteroscedastic, val_mode=val_mode, quantiles=quantiles,
+        device=device)
     inference_time = (datetime.now()-start).total_seconds()
     if not val_mode:
         # inference time is reported in milliseconds.
@@ -251,22 +285,12 @@ def train_evaluate_best_model(args, cfg, best_params, seed=None, logger=None,
         all_results['Case_id'] = [item for sublist in all_results['Case_id'] for item in sublist]
     #for key, value in all_results.items():
         #print(f"{key}: {len(value)}")
-    results_df = pd.DataFrame(all_results)
-    if val_mode:
-        if args.IR == 'GMM':
-            res_name = args.model_name+'gmm'+str(gmm_label)+'_seed'+str(seed)+'_inference_validation.csv'
-        else:
-            res_name = args.model_name+'seed'+str(seed)+'_inference_validation.csv'
-        res_path = os.path.join(args.process_path, res_name)
-    else:
+    results_df = pd.DataFrame(all_results)    
+    if not val_mode:
         cols = ['Case_id', 'Prefix_length'] + [c for c in results_df.columns if c not in ['Case_id', 'Prefix_length']]
         results_df = results_df[cols]
-        if args.IR == 'GMM':
-            res_name = args.model_name+'gmm'+str(gmm_label)+'_seed'+str(seed)+'_inference.csv'
-        else:
-            res_name = args.model_name+'seed'+str(seed)+'_inference.csv'        
-        res_path = os.path.join(args.result_path, res_name)  
-        results_df.to_csv(res_path, index=False)
+    res_path = add_result_paths(args, val_mode, gmm_label, seed)        
+    results_df.to_csv(res_path, index=False)
     MAE = results_df["Absolute_error"].mean()
     # get MAE on many, med, and few shots
     df = add_shots_quantile(results_df)

@@ -6,6 +6,7 @@ Created on Tue Sep 23 07:52:18 2025
 import os
 import pickle
 import argparse
+import pandas as pd
 
 from src.utils.utils import results_to_dataframe
 
@@ -23,7 +24,12 @@ def main():
     with open(os.path.join(result_dir,result_name), 'rb') as f:
         overall_results  =  pickle.load(f)
     df = results_to_dataframe(overall_results)
-    print(df.head(15))
+    # sort dataframe
+    custom_order = ['wos', 'LDS', 'FDS', 'LDS+FDS']
+    df['Smooth'] = pd.Categorical(df['Smooth'], categories=custom_order, ordered=True)
+    df_sorted = df.sort_values('Smooth').reset_index(drop=True)
+    #print(df_sorted.head(25))
+    print(df_sorted)
 
 if __name__ == '__main__':
     main() 

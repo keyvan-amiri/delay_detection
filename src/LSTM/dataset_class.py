@@ -47,8 +47,8 @@ class DALSTM_dataset(Dataset):
                     lds_kernel=args.lds_kernel,
                     lds_ks=args.lds_ks,
                     lds_sigma=args.lds_sigma,
-                    n_bins=getattr(args, "n_bins", 100),        # add to args or default
-                    binning=getattr(args, "binning", "quantile") # "quantile" or "uniform"
+                    n_bins=getattr(args, "n_bins", 20),
+                    binning=getattr(args, "binning", "quantile")
                     )
                 self.weights = w
                 self.bin_edges = bin_edges
@@ -66,7 +66,7 @@ class DALSTM_dataset(Dataset):
 
     def _prepare_weights(self, reweight, lds=False,
                          lds_kernel='gaussian', lds_ks=5, lds_sigma=2,
-                         n_bins=100, binning="quantile"):
+                         n_bins=20, binning="quantile"):
         assert reweight in {'none', 'inverse', 'sqrt_inv'}
         assert (not lds) or (reweight != 'none'), "Use 'inverse' or 'sqrt_inv' with LDS"
         y = self.y.detach().cpu().numpy().astype(np.float32)

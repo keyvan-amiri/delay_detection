@@ -5,6 +5,8 @@ Created on Mon Sep 22 09:04:23 2025
 """
 import pickle
 from typing import Tuple
+import numpy as np
+from scipy import stats
 import torch
 from torch.utils.data import DataLoader
 
@@ -23,7 +25,7 @@ def get_train_params(cfg):
 
 def load_DALSTM_data(args, cfg, gmm_label=None):
     # load data
-    X_train, X_val, X_test, y_train, y_val, y_test, z_train, z_val, z_test = load_data(args)
+    X_train, X_val, X_test, y_train, y_val, y_test, z_train, z_val, z_test, meta = load_data(args)
     # filter for two-step approach
     if gmm_label is not None:
         X_train, y_train, _, _ = filter_by_gmm_label(X_train, y_train, z_train, gmm_label)
@@ -70,7 +72,9 @@ def load_DALSTM_data(args, cfg, gmm_label=None):
         idx = mask.nonzero(as_tuple=True)[0].tolist()
         test_lengths = [test_lengths[i] for i in idx]
         test_cases   = [test_cases[i] for i in idx]
-    return (train_loader, val_loader, test_loader, test_lengths, test_cases, relevance_val, relevance_test)
+    return (train_loader, val_loader, test_loader, 
+            test_lengths, test_cases, 
+            relevance_val, relevance_test, meta)
 
 def load_data(args):
     X_train = torch.load(args.X_train_path, weights_only=True)
@@ -82,7 +86,14 @@ def load_data(args):
     z_train = torch.load(args.z_train_path, weights_only=True)
     z_val = torch.load(args.z_val_path, weights_only=True)
     z_test = torch.load(args.z_test_path, weights_only=True)    
-    return X_train, X_val, X_test, y_train, y_val, y_test, z_train, z_val, z_test
+    if args.log_trans:
+        y_train, y_val, y_test = apply_log1p_transform(y_train, y_val, y_test)
+        meta = None
+    elif args.box_cox:
+        y_train, y_val, y_test, meta = apply_boxcox_transform(y_train, y_val, y_test)
+    else:
+        meta = None
+    return X_train, X_val, X_test, y_train, y_val, y_test, z_train, z_val, z_test, meta
 
 def load_test_lenght_and_ids(args):
     with open(args.test_length_path, 'rb') as f:
@@ -110,3 +121,54 @@ def filter_by_gmm_label(
     y_sub = y[mask]      # filters first dimension, preserves remaining dims
     z_sub = z1[mask].reshape(y_sub.shape[0])  # [n_sub]
     return X_sub, y_sub, z_sub, mask
+
+def apply_log1p_transform(y_train, y_val, y_test):
+    # ensure float
+    y_train = y_train.float()
+    y_val   = y_val.float()
+    y_test  = y_test.float()
+    t_train = torch.log1p(y_train)
+    t_val   = torch.log1p(y_val)
+    t_test  = torch.log1p(y_test)
+    return t_train, t_val, t_test
+
+def apply_boxcox_transform(y_train, y_val, y_test, eps=1e-6):
+    y_train = y_train.float()
+    y_val   = y_val.float()
+    y_test  = y_test.float()
+    # --- fit on train+val only ---
+    y_fit = torch.cat([y_train, y_val], dim=0)
+    y_fit_np = y_fit.detach().cpu().numpy().reshape(-1)
+    # shift to make strictly positive
+    min_y = y_fit_np.min()
+    shift = 0.0
+    if min_y <= 0:
+        shift = -min_y + eps
+    y_fit_pos = y_fit_np + shift
+    # estimate lambda
+    _, lam = stats.boxcox(y_fit_pos)
+    # --- define transform ---
+    def boxcox_torch(y, lam, shift):
+        y_pos = y + shift
+        if abs(lam) < 1e-8:
+            return torch.log(y_pos)
+        return (torch.pow(y_pos, lam) - 1.0) / lam
+    t_train = boxcox_torch(y_train, lam, shift)
+    t_val   = boxcox_torch(y_val,   lam, shift)
+    t_test  = boxcox_torch(y_test,  lam, shift)    
+    meta = {"name": "boxcox", "lambda": float(lam), "shift": float(shift)}
+    return t_train, t_val, t_test, meta
+
+def inverse_log1p(t):
+    return np.expm1(t)
+
+def inverse_boxcox(t, meta):
+    lam = meta["lambda"]
+    shift = meta["shift"]    
+    if abs(lam) < 1e-8:
+        y = np.exp(t)
+    else:
+        y = np.power(lam * t + 1.0, 1.0 / lam)
+    y = y - shift
+    y = np.clip(y, a_min=0.0, a_max=None)
+    return y

@@ -7,6 +7,7 @@ import os
 import pandas as pd
 import numpy as np
 from scipy.stats import gaussian_kde
+from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
 
 def _c_index(y_true, y_pred, eps=1e-12):
@@ -467,7 +468,7 @@ def distribution_plot(dataset, model, df_lst, loaded_labels, result_folder,
     print(f"[OK] Saved histogram PDF: {out_pdf}")
 
  
-def distribution_kde_plot(
+def distribution_kde_plot3(
         dataset, model, df_lst, loaded_labels, result_folder,
         seed_tag="seed409", bw=0.6, tail_focus=True, focus_ratio=0.10,
         tail_computation=False):
@@ -489,8 +490,8 @@ def distribution_kde_plot(
         kde_p = gaussian_kde(preds_clean, bw_method=bw)
         plt.plot(x, kde_p(x), label=f"Pred: {lab}")
         tail_stats.append((lab, preds_clean))
-    plt.xlabel("Remaining Time (Days)", fontsize=18, fontweight='bold')
-    plt.ylabel("Density", fontsize=18, fontweight='bold')
+    plt.xlabel("Remaining Time (Days)", fontsize=16, fontweight='bold')
+    plt.ylabel("Density", fontsize=16, fontweight='bold')
     if tail_focus:
         # Tail defined from GT quantile
         q_tail = np.nanquantile(gt_clean, 1 - focus_ratio)
@@ -511,12 +512,12 @@ def distribution_kde_plot(
                 "\n".join(lines),
                 transform=plt.gca().transAxes,
                 ha="right", va="top",
-                fontsize=10,
+                fontsize=14,
                 bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.85, edgecolor="lightgray")
                 )
-        plt.text(q_tail + 1, plt.ylim()[1] * 0.70, f"Top {int(focus_ratio*100)}% tail", fontsize=18,fontweight='bold')        
+        plt.text(q_tail + 1, plt.ylim()[1] * 0.70, f"Top {int(focus_ratio*100)}% tail", fontsize=16,fontweight='bold')        
     #plt.title(f"GroundTruth vs Predictions distribution ({dataset} / {model})")
-    plt.legend(prop={'size': 18, 'weight': 'bold'})
+    plt.legend(prop={'size': 16, 'weight': 'bold'})
     plt.xticks(fontsize=14, fontweight='bold')
     plt.yticks(fontsize=14, fontweight='bold')
     out_pdf = os.path.join(result_folder, f"{dataset}_{model}_gt_vs_preds_kde_{seed_tag}.pdf")
@@ -525,17 +526,247 @@ def distribution_kde_plot(
     plt.close()
     print(f"[OK] Saved KDE PDF: {out_pdf}")
     
+def distribution_kde_plot2(
+        dataset, model, df_lst, loaded_labels, result_folder,
+        seed_tag="seed409", bw=0.4, tail_focus=True, focus_ratio=0.10,
+        tail_computation=False):
+    gt = df_lst[0]["GroundTruth"].to_numpy()
+    gt_clean = gt[~np.isnan(gt)]
+
+    # compute GT mode
+    gt_mean = int(np.round(np.mean(gt_clean), 0))
+
+    all_vals = [gt] + [df["Prediction"].to_numpy() for df in df_lst]
+    all_vals = np.concatenate(all_vals)
+    xmin, xmax = np.nanmin(all_vals), np.nanmax(all_vals)
+    x = np.linspace(xmin, xmax, 1000)
+    plt.figure(figsize=(9, 5))
+
+    # KDE curves — CHANGED LABEL to include mean
+    kde_gt = gaussian_kde(gt_clean, bw_method=bw)
+    plt.plot(x, kde_gt(x), label=f"GroundTruth (mean={gt_mean})")
+
+    # OPTIONAL but useful: still draw the mean line (legend will describe it)
+    plt.axvline(gt_mean, linestyle=":", linewidth=1.5)
+
+    tail_stats = []
+    for df, lab in zip(df_lst, loaded_labels):
+        preds = df["Prediction"].to_numpy()
+        preds_clean = preds[~np.isnan(preds)]
+        kde_p = gaussian_kde(preds_clean, bw_method=bw)
+        plt.plot(x, kde_p(x), label=f"Prediction ({lab})")
+        tail_stats.append((lab, preds_clean))
+
+    plt.xlabel("Remaining Time (Days)", fontsize=16, fontweight='bold')
+    plt.ylabel("Density", fontsize=16, fontweight='bold')
+
+    if tail_focus:
+        q_tail = np.nanquantile(gt_clean, 1 - focus_ratio)
+        plt.axvline(q_tail, linestyle="--", linewidth=1)
+        plt.axvspan(q_tail, xmax, alpha=0.08)
+
+        if tail_computation:
+            gt_tail_mass = np.mean(gt_clean >= q_tail)
+            lines = [f"Tail region: y ≥ q{int((1-focus_ratio)*100)}(GT) = {q_tail:.2f}",
+                     f"GT tail mass: {gt_tail_mass*100:.1f}%"]
+            for lab, preds_clean in tail_stats:
+                pred_tail_mass = np.mean(preds_clean >= q_tail)
+                lines.append(f"{lab} tail mass: {pred_tail_mass*100:.1f}%")
+            plt.text(
+                0.98, 0.80,
+                "\n".join(lines),
+                transform=plt.gca().transAxes,
+                ha="right", va="top",
+                fontsize=14,
+                bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.85, edgecolor="lightgray")
+            )
+
+        plt.text(q_tail + 1, plt.ylim()[1] * 0.70,
+                 f"Top {int(focus_ratio*100)}% tail",
+                 fontsize=16, fontweight='bold')
+
+    plt.legend(prop={'size': 16, 'weight': 'bold'})
+    plt.xticks(fontsize=14, fontweight='bold')
+    plt.yticks(fontsize=14, fontweight='bold')
+
+    out_pdf = os.path.join(result_folder, f"{dataset}_{model}_gt_vs_preds_kde_{seed_tag}.pdf")
+    plt.tight_layout()
+    plt.savefig(out_pdf, format="pdf")
+    plt.close()
+    print(f"[OK] Saved KDE PDF: {out_pdf}")
+    
+
+def distribution_kde_plot(
+        dataset, model, df_lst, loaded_labels, result_folder,
+        seed_tag="seed409", bw=0.4, tail_focus=True, focus_ratio=0.10,
+        tail_computation=False, center_stat="mean",
+        center_grid_n=5000, peak_prominence=0.05, max_peaks=5):
+    """
+    Plots KDEs for GT and predictions and prints summary stats.
+    - center_stat:
+        * "mean": uses mean(GT) as the center line/label
+        * "mode": uses smoothed (KDE) mode of GT as the center line/label
+    - Also detects and prints multiple KDE peaks (modes) for each prediction
+      using scipy.signal.find_peaks on the KDE curve.
+    - peak_prominence is relative to the curve's max height (e.g., 0.05 = 5% of max).
+    """
+    def kde_peaks(values, bw_method, xmin, xmax, n_grid, rel_prom, max_peaks_keep):
+        """Return sorted peak x-positions and peak heights from KDE(values)."""
+        v = values[~np.isnan(values)]
+        if v.size < 3:
+            return [], []
+        kde = gaussian_kde(v, bw_method=bw_method)
+        xg = np.linspace(xmin, xmax, n_grid)
+        yg = kde(xg)
+
+        # prominence threshold relative to max density
+        prom_abs = rel_prom * float(np.max(yg)) if np.max(yg) > 0 else 0.0
+        peaks, props = find_peaks(yg, prominence=prom_abs)
+
+        if peaks.size == 0:
+            return [], []
+
+        px = xg[peaks]
+        py = yg[peaks]
+
+        # keep the most prominent/highest peaks (sort by height descending)
+        order = np.argsort(py)[::-1]
+        px, py = px[order], py[order]
+
+        if max_peaks_keep is not None:
+            px, py = px[:max_peaks_keep], py[:max_peaks_keep]
+
+        # for readability in reports: sort modes by x position
+        order_x = np.argsort(px)
+        px, py = px[order_x], py[order_x]
+
+        return [float(v) for v in px], [float(v) for v in py]
+
+    # --- Ground truth ---
+    gt = df_lst[0]["GroundTruth"].to_numpy()
+    gt_clean = gt[~np.isnan(gt)]
+
+    # global x-range for consistent peak finding across curves
+    all_vals = [gt] + [df["Prediction"].to_numpy() for df in df_lst]
+    all_vals = np.concatenate(all_vals)
+    xmin, xmax = float(np.nanmin(all_vals)), float(np.nanmax(all_vals))
+
+    # center statistic for GT
+    if center_stat == "mode":
+        gt_modes, _ = kde_peaks(
+            gt_clean, bw_method=bw, xmin=xmin, xmax=xmax,
+            n_grid=center_grid_n, rel_prom=peak_prominence, max_peaks_keep=1
+        )
+        center_val = gt_modes[0] if gt_modes else float(np.mean(gt_clean))
+        center_name = "kde_mode"
+    else:
+        center_val = float(np.mean(gt_clean))
+        center_name = "mean"
+
+    # --- Plot setup ---
+    x = np.linspace(xmin, xmax, 1000)
+    plt.figure(figsize=(9, 5))
+
+    kde_gt = gaussian_kde(gt_clean, bw_method=bw)
+    plt.plot(x, kde_gt(x), label=f"GroundTruth ({center_name}={center_val:.1f})")
+    plt.axvline(center_val, linestyle=":", linewidth=1.5)
+
+    # --- Peak reporting header ---
+    print("\n" + "=" * 70)
+    print(f"KDE peak report | dataset={dataset} | model={model} | bw={bw} | "
+          f"prominence={peak_prominence} | max_peaks={max_peaks}")
+    print(f"GT {center_name}: {center_val:.1f}")
+    print("=" * 70)
+
+    # also report GT multi-peaks if you want (kept consistent with request)
+    gt_all_modes, _ = kde_peaks(
+        gt_clean, bw_method=bw, xmin=xmin, xmax=xmax,
+        n_grid=center_grid_n, rel_prom=peak_prominence, max_peaks_keep=max_peaks
+    )
+    if gt_all_modes:
+        print("GroundTruth KDE peaks (modes): " + ", ".join(f"{m:.1f}" for m in gt_all_modes))
+    else:
+        print("GroundTruth KDE peaks (modes): none detected (check bw/prominence).")
+
+    # --- Predictions: plot + multi-peak extraction ---
+    tail_stats = []
+    for df, lab in zip(df_lst, loaded_labels):
+        preds = df["Prediction"].to_numpy()
+        preds_clean = preds[~np.isnan(preds)]
+
+        kde_p = gaussian_kde(preds_clean, bw_method=bw)
+        plt.plot(x, kde_p(x), label=f"Prediction ({lab})")
+        tail_stats.append((lab, preds_clean))
+
+        pred_modes, _ = kde_peaks(
+            preds_clean, bw_method=bw, xmin=xmin, xmax=xmax,
+            n_grid=center_grid_n, rel_prom=peak_prominence, max_peaks_keep=max_peaks
+        )
+        if pred_modes:
+            print(f"{lab} KDE peaks (modes): " + ", ".join(f"{m:.1f}" for m in pred_modes))
+        else:
+            print(f"{lab} KDE peaks (modes): none detected (check bw/prominence).")
+
+    # --- Labels / tail focus ---
+    plt.xlabel("Remaining Time (Days)", fontsize=16, fontweight='bold')
+    plt.ylabel("Density", fontsize=16, fontweight='bold')
+
+    if tail_focus:
+        q_tail = np.nanquantile(gt_clean, 1 - focus_ratio)
+        plt.axvline(q_tail, linestyle="--", linewidth=1)
+        plt.axvspan(q_tail, xmax, alpha=0.08)
+
+        if tail_computation:
+            gt_tail_mass = np.mean(gt_clean >= q_tail)
+            lines = [
+                f"Tail region: y ≥ q{int((1-focus_ratio)*100)}(GT) = {q_tail:.2f}",
+                f"GT tail mass: {gt_tail_mass*100:.1f}%"
+            ]
+            for lab, preds_clean in tail_stats:
+                pred_tail_mass = np.mean(preds_clean >= q_tail)
+                lines.append(f"{lab} tail mass: {pred_tail_mass*100:.1f}%")
+
+            plt.text(
+                0.98, 0.80,
+                "\n".join(lines),
+                transform=plt.gca().transAxes,
+                ha="right", va="top",
+                fontsize=14,
+                bbox=dict(boxstyle="round,pad=0.35",
+                          facecolor="white", alpha=0.85, edgecolor="lightgray")
+            )
+
+        plt.text(q_tail + 1, plt.ylim()[1] * 0.70,
+                 f"Top {int(focus_ratio*100)}% tail",
+                 fontsize=16, fontweight='bold')
+
+    plt.legend(prop={'size': 16, 'weight': 'bold'})
+    plt.xticks(fontsize=14, fontweight='bold')
+    plt.yticks(fontsize=14, fontweight='bold')
+
+    out_pdf = os.path.join(
+        result_folder,
+        f"{dataset}_{model}_gt_vs_preds_kde_{center_name}_{seed_tag}.pdf"
+    )
+    plt.tight_layout()
+    plt.savefig(out_pdf, format="pdf")
+    plt.close()
+    print(f"[OK] Saved KDE PDF: {out_pdf}")
+
+
+    
 def main():
-    dataset = "BPIC20PTC"  # HelpDesk / BPIC20PTC
+    dataset = "BPIC20PTC"  # HelpDesk BPIC20PTC P2P
     model = "DALSTM"
     IR_lst = ["Vanilla", 'BMSE']
     smooth_lst = ["wos", "wos"]
-    labels = ["Vanilla", 'BMSE']
+    labels = ["MAE", 'BMSE']
     #IR_lst = ['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA']
     #smooth_lst = ['wos', 'wos', 'wos', 'wos', 'wos']
     #labels = ['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA']
-    filter_length = True
+    filter_length = False
     selected_length = 2
+    tail_computation = False
 
     seed_tag = "seed409"
     root_path = os.getcwd()
@@ -567,12 +798,12 @@ def main():
 
     # 1) distribution plot(s)
     #distribution_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
-    distribution_kde_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
+    distribution_kde_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag, center_stat="mode")
     #residual_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
     #distribution_QQ_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
     #distribution_plot_cdf(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
     #distribution_calibration_plot(dataset, model, df_lst, loaded_labels, result_folder, seed_tag=seed_tag)
-    if not filter_length:
+    if tail_computation:
         # 2) C-index cumulative curves + AUC summaries
         summary_df, _ = plot_cindex_curves_and_save(
             dataset=dataset,

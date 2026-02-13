@@ -3,32 +3,36 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def set_loss(args):
-    loss_func = args.loss
-    if args.heteroscedastic:
-        return heteroscedastic_loss(metric=loss_func)
+def set_loss(args, loss_func=None):
+    if loss_func is None: 
+        loss_func = args.loss
     if loss_func == 'bmse':
         return bmc_loss
-    if loss_func == 'sera':
+    elif loss_func == 'sera':
         return sera_loss
-    if loss_func == 'mae':
+    elif loss_func == 'mae':
         return weighted_l1_loss
-    if loss_func == 'mse':
+    elif loss_func == 'mse':
         return weighted_mse_loss
-    if loss_func == 'huber':
+    elif loss_func == 'huber':
         return weighted_huber_loss
-    if loss_func == 'focal_mae':
+    elif loss_func == 'focal_mae':
         beta = getattr(args, "focal_beta", 0.2)
         gamma = getattr(args, "focal_gamma", 1.0)
         return lambda inputs, targets, weights=None: weighted_focal_l1_loss(
             inputs, targets, weights=weights, activate='sigmoid', beta=beta, gamma=gamma
         )
-    if loss_func == 'focal_mse':
+    elif loss_func == 'focal_mse':
         beta = getattr(args, "focal_beta", 0.2)
         gamma = getattr(args, "focal_gamma", 1.0)
         return lambda inputs, targets, weights=None: weighted_focal_mse_loss(
             inputs, targets, weights=weights, activate='sigmoid', beta=beta, gamma=gamma
         )
+    elif loss_func == 'quantile':
+        return quantile_loss
+    if args.heteroscedastic:
+        return heteroscedastic_loss(metric=loss_func)
+    
     raise ValueError(f"Unknown loss: {loss_func}")
 
 def weighted_l1_loss(inputs, targets, weights=None):
@@ -45,36 +49,48 @@ def weighted_mse_loss(inputs, targets, weights=None):
     loss = torch.mean(loss)
     return loss
 
-def weighted_focal_l1_loss(inputs, targets, weights=None,
-                           activate='sigmoid', beta=.2, gamma=1):
+def weighted_focal_l1_loss(
+        inputs, targets, weights=None, activate='sigmoid', beta=0.2, gamma=1,
+        use_relative=False, rel_eps=1e-6):
     # per-sample absolute error
-    err = torch.abs(inputs - targets)
-    # focal scaling in [0, 1]
+    abs_err = torch.abs(inputs - targets)
+    if use_relative:
+        scale_err = abs_err / (torch.abs(targets) + rel_eps)
+    else:
+        scale_err = abs_err
+    # focal scaling
     if activate == 'tanh':
-        scale = torch.tanh(beta * err).pow(gamma)
-    else:  # 'sigmoid' (matches your description)
-        scale = torch.sigmoid(beta * err).pow(gamma)
-    loss = scale * err  # Focal-R L1
+        scale = torch.tanh(beta * scale_err).pow(gamma)
+    else:
+        scale = torch.sigmoid(beta * scale_err).pow(gamma)
+    # base loss stays absolute L1
+    loss = scale * abs_err
     if weights is not None:
         loss = loss * weights.expand_as(loss)
     return loss.mean()
 
-def weighted_focal_mse_loss(inputs, targets, weights=None,
-                            activate='sigmoid', beta=.2, gamma=1):
+def weighted_focal_mse_loss(
+        inputs, targets, weights=None, activate='sigmoid', beta=0.2, gamma=1,
+        use_relative=False, rel_eps=1e-6):
     # per-sample squared error
-    err = torch.abs(inputs - targets)        # use abs for the scaling term
-    se  = (inputs - targets) ** 2            # base regression error
-    # focal scaling in [0, 1]
+    abs_err = torch.abs(inputs - targets)
+    se = (inputs - targets) ** 2
+    if use_relative:
+        scale_err = abs_err / (torch.abs(targets) + rel_eps)
+    else:
+        scale_err = abs_err
+    # focal scaling
     if activate == 'tanh':
-        scale = torch.tanh(beta * err).pow(gamma)
-    else:  # 'sigmoid' (matches your description)
-        scale = torch.sigmoid(beta * err).pow(gamma)
-    loss = scale * se  # Focal-R MSE
+        scale = torch.tanh(beta * scale_err).pow(gamma)
+    else:
+        scale = torch.sigmoid(beta * scale_err).pow(gamma)
+    loss = scale * se
     if weights is not None:
         loss = loss * weights.expand_as(loss)
     return loss.mean()
 
-def weighted_huber_loss(inputs, targets, weights=None, beta=1.):
+
+def weighted_huber_loss(inputs, targets, weights=None, beta=1.0):
     l1_loss = torch.abs(inputs - targets)
     cond = l1_loss < beta
     loss = torch.where(cond, 0.5 * l1_loss ** 2 / beta, l1_loss - 0.5 * beta)
@@ -161,6 +177,44 @@ def sera_trapezoidal_loss(preds, trues, phi_trues, step=0.001, norm=False):
     # trapezoidal integration to get SERA
     sera = 0.5 * step * torch.sum(errors[:-1] + errors[1:])  # scalar
     return sera
+
+
+def quantile_pinball_loss(y_true: torch.Tensor,
+                          y_pred: torch.Tensor,
+                          quantiles,
+                          sample_weight: torch.Tensor = None,
+                          reduction: str = "mean") -> torch.Tensor:
+    """
+    y_true: (B,) or (B,1)
+    y_pred: (B,K)
+    quantiles: list/tuple of length K
+    sample_weight: (B,) optional 
+    """
+    if y_true.dim() == 2 and y_true.size(1) == 1:
+        y_true = y_true.squeeze(1)
+    y_true = y_true.unsqueeze(1)  # (B,1)
+    q = torch.as_tensor(quantiles, device=y_pred.device, dtype=y_pred.dtype).view(1, -1)  # (1,K)
+    e = y_true - y_pred  # (B,K)
+    loss = torch.maximum(q * e, (q - 1.0) * e)  # (B,K)
+    if sample_weight is not None:
+        sw = sample_weight.view(-1, 1).to(loss.dtype)
+        loss = loss * sw
+    if reduction == "none":
+        return loss
+    if reduction == "mean":
+        return loss.mean()
+    if reduction == "sum":
+        return loss.sum()
+    raise ValueError("reduction must be 'none', 'mean', or 'sum'")
+    
+def quantile_loss(
+        y_true, y_pred, quantiles = (0.1, 0.5, 0.6, 0.9, 0.95, 0.99),
+        q_weights = torch.tensor([1.0, 1.0, 1.2, 2.0, 3.0, 4.0]),
+        sample_weight=None):
+    base = quantile_pinball_loss(y_true, y_pred, quantiles,
+                                 sample_weight=sample_weight, reduction="none")  # (B,K)
+    qw = q_weights.to(base.device, base.dtype).view(1, -1)
+    return (base * qw).mean()
 
 # Custom class for Root Mean Squared Error (RMSE)
 class RMSELoss(nn.Module):
