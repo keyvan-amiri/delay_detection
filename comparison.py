@@ -28,6 +28,7 @@ def main():
     custom_order = ['wos', 'LDS', 'FDS', 'LDS+FDS']
     df['Smooth'] = pd.Categorical(df['Smooth'], categories=custom_order, ordered=True)
     df_sorted = df.sort_values('Smooth').reset_index(drop=True)
+    df_sorted = df_sorted.drop(columns=["SERA_mean", "SERA_std"])
     #print(df_sorted.head(25))
     print(df_sorted)
 

@@ -204,17 +204,20 @@ def get_sera_params(args):
                   "type":"choice",
                   "values":[0,1],
                   "value_type":"int"}
-        asym_sp = {"name": "asym", "type": "choice",
-                   "values": [False, True], "value_type": "bool"}
+        asym_sp = {"name":"asym_id",
+                   "type":"choice",
+                   "values":[0, 1],
+                   "value_type":"int",
+                   "is_ordered": True}
     else:
         ext_sp = {"name":"extreme_type_id", 
                   "type":"fixed",
                   "value":0,
                   "value_type":"int"}
-        asym_sp = {"name": "asym",
-                   "type": "fixed",
-                   "value": False,
-                   "value_type": "bool"}
+        asym_sp = {"name":"asym_id",
+                   "type":"fixed",
+                   "value":0,
+                   "value_type":"int"}
     return ext_sp, asym_sp
 
 def decode_params(parameters: dict) -> dict:
@@ -230,6 +233,8 @@ def decode_params(parameters: dict) -> dict:
     if "extreme_type_id" in p: p["extreme_type"] = ID2EXTREME[p.pop("extreme_type_id")]
     if "lds_kernel_id" in p:   p["lds_kernel"] = ID2KERNEL[p.pop("lds_kernel_id")]
     if "fds_kernel_id" in p:   p["fds_kernel"] = ID2KERNEL[p.pop("fds_kernel_id")]
+    if "asym_id" in p:
+        p["asym"] = bool(p.pop("asym_id"))
     return p
 
 

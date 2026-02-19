@@ -64,12 +64,15 @@ def main():
         args = handle_experiment(args, smooth)
         logger = get_logger(args)        
         best_par_lst, metric_lst = [], []
-        for gmm_id in gmm_freq_lst:
+        # TODO: remove unnecessary code!
+        for gmm_label, gmm_w in zip(distinct_labels, gmm_freq_lst):
+        #for gmm_id in gmm_freq_lst:
             gmm_dict = {}
             # HPO with first seed
             seed = args.seeds[0]
             best_parameters = conduct_HPO(
-                args, cfg, seed=seed, logger=logger, gmm_label=gmm_id)
+                args, cfg, seed=seed, logger=logger, gmm_label=gmm_label)
+            #best_parameters = conduct_HPO(args, cfg, seed=seed, logger=logger, gmm_label=gmm_id)
             mae_lst, many_lst, med_lst, few_lst, sera_lst = [], [], [], [], []
             for seed in args.seeds: 
                 (MAE, MAE_many, MAE_med, MAE_few, SERA

@@ -26,12 +26,23 @@ def get_train_params(cfg):
 def load_DALSTM_data(args, cfg, gmm_label=None):
     # load data
     X_train, X_val, X_test, y_train, y_val, y_test, z_train, z_val, z_test, meta = load_data(args)
+    print("Shapes:",
+      "X_train", X_train.shape, "y_train", y_train.shape, "z_train", z_train.shape,
+      "X_val", X_val.shape, "y_val", y_val.shape, "z_val", z_val.shape,
+      "X_test", X_test.shape, "y_test", y_test.shape, "z_test", z_test.shape)
+    print("z_train unique:", torch.unique(z_train).tolist()[:20])
+    print("BEFORE filter:", "gmm_label=", gmm_label,
+          "y_train", y_train.shape, "y_val", y_val.shape, "y_test", y_test.shape)
     # filter for two-step approach
     if gmm_label is not None:
         X_train, y_train, _, _ = filter_by_gmm_label(X_train, y_train, z_train, gmm_label)
         X_val, y_val, _, _ = filter_by_gmm_label(X_val, y_val, z_val, gmm_label)
         X_test, y_test, _, mask = filter_by_gmm_label(X_test, y_test, z_test, gmm_label)
+        print("AFTER filter:", "gmm_label=", gmm_label,
+              "y_train", y_train.shape, "y_val", y_val.shape, "y_test", y_test.shape)
+    print("ABOUT TO CAT:", y_train.shape, y_val.shape)
     y_train_val = torch.cat([y_train, y_val], dim=0)
+    print("y_train_val", y_train_val.shape)
     # compute relevance scores for SERA
     ph = phi_control(y_train_val, extr_type=args.extreme_type, asym=args.asym)
     relevance_train_val = phi(y_train_val, ph)

@@ -137,16 +137,24 @@ def get_logger(args):
     logger_par.addHandler(file_handler_par)
     return logger_par
 
-def get_num_component(args):   
+def get_num_component(args): 
     if args.IR == 'GMM':
-        z_test = torch.load(args.z_test_path, weights_only=True)
+        z_test = torch.load(args.z_test_path, map_location="cpu")  # tensor of ids
+        z_test = z_test.view(-1).long()
+        #TODO: remove unnecessary code
+        #z_test = torch.load(args.z_test_path, weights_only=True)
         distinct_labels_tensor, counts = torch.unique(z_test, return_counts=True)
-        distinct_labels = distinct_labels_tensor.tolist()
-        gmm_freq_lst = (counts.float() / z_test.numel()).tolist()
+        # sort labels so order is stable
+        order = torch.argsort(distinct_labels_tensor)
+        distinct_labels_tensor = distinct_labels_tensor[order]
+        counts = counts[order]
+        distinct_labels = distinct_labels_tensor.tolist() # ids: [0,1,...]
+        gmm_freq_lst = (counts.float() / z_test.numel()).tolist() # weights: [..] sum to 1
     else:
-        distinct_labels = None
+        distinct_labels = [None]
         gmm_freq_lst = [1.0]
     return gmm_freq_lst, distinct_labels
+
 
 def add_result_paths(args, val_mode, gmm_label, seed):
     if val_mode:    
