@@ -303,3 +303,75 @@ def add_quantile_results(all_results, quantiles, y_true_np,
         cov = ((y_true_np >= q10_np) & (y_true_np <= q90_np)).astype(np.float32)
         all_results["PI_Coverage_10_90"].extend(cov.tolist())
     return all_results
+
+def quantile_inference(
+        args, model, all_results,
+        inference_loader, inference_lengths, inference_cases,
+        quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99), device=None):
+    # helpful index mapping for quantiles
+    q_to_idx = {float(q): i for i, q in enumerate(quantiles)}
+    has_q05 = 0.5 in q_to_idx
+    has_q01 = 0.1 in q_to_idx
+    has_q09 = 0.9 in q_to_idx
+    length_idx = 0
+    with torch.no_grad():
+        for batch in inference_loader:
+            inputs = batch[0].to(device)
+            y_true = batch[1].to(device)
+            batch_size = inputs.shape[0]
+            # ---- predictions ----
+            # model outputs (B, K)
+            q_pred = model(inputs)
+            if not has_q05:
+                raise ValueError("Quantile regression inference expects q=0.5 in quantiles for point prediction.")
+            # point prediction = median
+            y_pred = q_pred[:, q_to_idx[0.5]]  # (B,)
+            # store intervals and/or all quantiles
+            if has_q01:
+                q10 = q_pred[:, q_to_idx[0.1]]
+            else:
+                q10 = None
+            if has_q09:
+                q90 = q_pred[:, q_to_idx[0.9]]
+            else:
+                q90 = None
+            # only keep this if your y is always >= 0
+            epsilon = 1e-8
+            # clamp ALL quantiles consistently (preserves monotonicity)
+            q_pred = torch.maximum(q_pred, torch.tensor(epsilon, device=device))
+            y_pred = q_pred[:, q_to_idx[0.5]]
+            if has_q01:
+                q10 = q_pred[:, q_to_idx[0.1]]
+            if has_q09:
+                q90 = q_pred[:, q_to_idx[0.9]]
+            # ---- errors ----
+            y_true_np = y_true.detach().cpu().numpy()
+            y_pred_np = y_pred.detach().cpu().numpy()
+            # If storing intervals/quantiles, prepare numpy too
+            q_pred_np = q_pred.detach().cpu().numpy()  # (B,K)
+            if has_q01:
+                q10_np = q10.detach().cpu().numpy()
+            if has_q09:
+                q90_np = q90.detach().cpu().numpy()
+            if args.log_trans:
+                y_pred_np = inverse_log1p(y_pred_np)
+                y_true_np = inverse_log1p(y_true_np)
+                q_pred_np = inverse_log1p(q_pred_np)
+                if has_q01:
+                    q10_np = inverse_log1p(q10_np)
+                if has_q09:
+                    q90_np = inverse_log1p(q90_np)
+            mae_batch = np.abs(y_true_np - y_pred_np)
+            all_results["GroundTruth"].extend(y_true_np.tolist())
+            all_results["Prediction"].extend(y_pred_np.tolist())
+            all_results["Absolute_error"].extend(mae_batch.tolist()) 
+            # ---- add quantile outputs to results
+            all_results = add_quantile_results(
+                all_results, quantiles, y_true_np, q_pred_np, q10_np,
+                q90_np, has_q01, has_q09)
+            pre_lengths = inference_lengths[length_idx:length_idx + batch_size]
+            pre_cases = inference_cases[length_idx:length_idx + batch_size]
+            all_results["Prefix_length"].extend(np.array(pre_lengths).reshape(-1, 1).tolist())
+            all_results["Case_id"].extend(np.array(pre_cases).reshape(-1, 1).tolist())
+            length_idx += batch_size
+    return all_results

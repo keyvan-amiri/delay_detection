@@ -66,7 +66,6 @@ def handle_paths(args):
     return args
 
 def add_DALSTM_paths(args):
-    # save addresses for train, validation, test tensors
     args.X_train_path = os.path.join(
         args.process_path, "DALSTM_X_train_"+args.dataset+".pt")
     args.X_val_path = os.path.join(
@@ -85,10 +84,17 @@ def add_DALSTM_paths(args):
     args.z_val_path = os.path.join(
         args.process_path, "DALSTM_z_val_"+args.dataset+".pt")
     args.z_test_path = os.path.join(
-        args.process_path, "DALSTM_z_test_"+args.dataset+".pt")
-    # save length of the prefixes in the test set
+        args.process_path, "DALSTM_z_test_"+args.dataset+".pt")    
+    args.train_length_path = os.path.join(
+        args.process_path, "DALSTM_train_length_list_"+args.dataset+".pkl") 
+    args.val_length_path = os.path.join(
+        args.process_path, "DALSTM_val_length_list_"+args.dataset+".pkl")  
     args.test_length_path = os.path.join(
-        args.process_path, "DALSTM_test_length_list_"+args.dataset+".pkl")  
+        args.process_path, "DALSTM_test_length_list_"+args.dataset+".pkl") 
+    args.train_cases_path = os.path.join(
+        args.process_path, "DALSTM_train_cases_"+args.dataset+".pkl")
+    args.val_cases_path = os.path.join(
+        args.process_path, "DALSTM_val_cases_"+args.dataset+".pkl")    
     args.test_cases_path = os.path.join(
         args.process_path, "DALSTM_test_cases_"+args.dataset+".pkl")
     args.input_size_path = os.path.join(
@@ -190,3 +196,18 @@ def add_result_paths(args, val_mode, gmm_label, seed):
                 res_name = args.model_name+'seed'+str(seed)+'_inference.csv'        
         res_path = os.path.join(args.result_path, res_name)
     return res_path
+
+def get_auxiliary_logger(result_dir):
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger_par = logging.getLogger('Second_model_Logger')
+    logger_par.setLevel(logging.INFO)
+    # Clear previous handlers
+    if logger_par.hasHandlers():
+        logger_par.handlers.clear()
+    logger_par_name = 'tabular_report.log'
+    logger_par_path = os.path.join(result_dir, logger_par_name)
+    file_handler_par = logging.FileHandler(logger_par_path)
+    file_handler_par.setLevel(logging.INFO)
+    file_handler_par.setFormatter(formatter)
+    logger_par.addHandler(file_handler_par)
+    return logger_par

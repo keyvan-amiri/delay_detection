@@ -113,6 +113,23 @@ def load_test_lenght_and_ids(args):
         test_cases  =  pickle.load(f)            
     return test_lengths, test_cases
 
+def load_quantile_lenght_and_ids(args):
+    with open(args.train_length_path, 'rb') as f:
+        train_lengths  =  pickle.load(f)
+    with open(args.train_cases_path, 'rb') as f:
+        train_cases  =  pickle.load(f) 
+    with open(args.val_length_path, 'rb') as f:
+        val_lengths  =  pickle.load(f)
+    with open(args.val_cases_path, 'rb') as f:
+        val_cases  =  pickle.load(f)   
+    with open(args.test_length_path, 'rb') as f:
+        test_lengths  =  pickle.load(f)
+    with open(args.test_cases_path, 'rb') as f:
+        test_cases  =  pickle.load(f)              
+    return (train_lengths, train_cases,
+            val_lengths, val_cases,
+            test_lengths, test_cases)
+
 def filter_by_gmm_label(
     X: torch.Tensor,
     y: torch.Tensor,

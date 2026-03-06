@@ -1,18 +1,18 @@
 data:
   path: '/ceph/kamiriel/SNA4PPM/data'
-  format: csv
-  case_col: 'caseid'
-  act_col: 'task'
-  start_time: 'start_timestamp'
-  end_time: 'end_timestamp'
+  format: xes
+  case_col: 'case:concept:name'
+  act_col: 'concept:name'
+  start_time: None
+  end_time: 'time:timestamp'
   trans_col: 'lifecycle:transition'
-  res_col: 'user'
-  num_TS: 2
-  use_data_attributes: False
-  case_num_feat: []
-  case_cat_feat: []
+  res_col: 'org:resource'
+  num_TS: 1
+  use_data_attributes: True
+  case_num_feat: ['RequestedAmount']
+  case_cat_feat: ['Project', 'OrganizationalEntity']
   event_num_feat: []
-  event_cat_feat: []
+  event_cat_feat: ['org:role']
   train_ratio: 0.8
   val_ratio: 0.2
   delay_thresh: 0.1

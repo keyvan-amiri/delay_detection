@@ -3,12 +3,12 @@
 Created on Tue Sep  9 13:29:04 2025
 @author: Keyvan Amiri Elyasi
 """
-from filelock import FileLock
 import os, time, pickle
 import pandas as pd
 import numpy as np
 
 def safe_update_results(results_path, key, value, timeout=600):
+    from filelock import FileLock
     lock_path = results_path + ".lock"
     tmp_path = f"{results_path}.{os.getpid()}.{int(time.time()*1000)}.tmp"
     with FileLock(lock_path, timeout=timeout):

@@ -5,6 +5,7 @@ Created on Wed Sep 10 10:39:15 2025
 """
 import os
 import numpy as np
+from pandas.api.types import is_numeric_dtype
 from datetime import datetime
 import time
 from tensorflow.keras.preprocessing.text import one_hot
@@ -136,7 +137,9 @@ def dalstm_load_dataset(dataframe, prev_values=None,
                 n=values[1]))
         field = 3
         for i in dataset[0][3:]:
-            if not np.issubdtype(dataframe.dtypes[field], np.number):
+            #TODO: decide on the version!
+            #if not np.issubdtype(dataframe.dtypes[field], np.number):
+            if not is_numeric_dtype(dataframe.iloc[:, field]):
                 a.extend(
                     buildOHE(
                         index=one_hot(str(i), values[field], split="|")[0],
@@ -179,8 +182,9 @@ def dalstm_load_dataset(dataframe, prev_values=None,
 
                 field = 3
                 for i in line[3:]:
-                    if not np.issubdtype(
-                                dataframe.dtypes[field], np.number):
+                    #TODO: decide on the version
+                    #if not np.issubdtype(dataframe.dtypes[field], np.number):
+                    if not is_numeric_dtype(dataframe.iloc[:, field]):
                         a.extend(
                                 buildOHE(
                                     index= one_hot(str(i), values[field],
@@ -233,7 +237,9 @@ def dalstm_load_dataset(dataframe, prev_values=None,
 
                 field = 3
                 for i in line[3:]:
-                    if not np.issubdtype(dataframe.dtypes[field], np.number):
+                    # TODO: decide on the version
+                    #if not np.issubdtype(dataframe.dtypes[field], np.number):
+                    if not is_numeric_dtype(dataframe.iloc[:, field]):                     
                         a.extend(
                                 buildOHE(
                                     index=one_hot(str(i), values[field],

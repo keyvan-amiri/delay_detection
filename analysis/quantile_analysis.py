@@ -55,12 +55,12 @@ def aggregate_quantile_seed_dfs(df_list):
 def plot_uncertainty_vs_target_pdf(
         args, 
         df,
+        result_dir,
         target_col="GroundTruth",
         uncertainty_col="PI_Width_10_90",
         n_bins=10,
         binning="quantile",   # "quantile" or "width"
-        pdf_path="uncertainty_vs_target.pdf"):
-    
+        ):    
     df = df.copy()
     # --- choose binning strategy ---
     if binning == "quantile":
@@ -91,18 +91,24 @@ def plot_uncertainty_vs_target_pdf(
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(pdf_path, format="pdf")
+    if args.log_trans:
+        plot_path = os.path.join(result_dir, args.dataset+"_logtrans_uncertainty_plot.pdf")
+    elif args.box_cox:
+        plot_path = os.path.join(result_dir, args.dataset+"_boxcox_uncertainty_plot.pdf")
+    else:
+        plot_path = os.path.join(result_dir, args.dataset+"_uncertainty_plot.pdf") 
+    plt.savefig(plot_path, format="pdf")
     plt.close()
     return stats
 
 def plot_uncertainty_vs_prefixlen_pdf(
         args,
         df,
+        result_dir,
         prefix_col="Prefix_length",
         uncertainty_col="PI_Width_10_90",
         n_bins=5,
         binning="quantile",
-        pdf_path="uncertainty_vs_prefixlen.pdf",
         verbose=True):
     df = df.copy()
     if binning == "quantile":
@@ -131,18 +137,25 @@ def plot_uncertainty_vs_prefixlen_pdf(
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(pdf_path, format="pdf")
+    if args.log_trans:
+        plot_path = os.path.join(result_dir, args.dataset+"_logtrans_uncertainty_plot_prefix_length.pdf")
+    elif args.box_cox:
+        plot_path = os.path.join(result_dir, args.dataset+"_boxcox_uncertainty_plot_prefix_length.pdf")
+    else:
+        plot_path = os.path.join(result_dir, args.dataset+"_uncertainty_plot_prefix_length.pdf")          
+    plt.savefig(plot_path, format="pdf")
     plt.close()
     return stats
 
 def plot_coverage_vs_target_pdf(
         args,
         df,
+        result_dir,
         target_col="GroundTruth",
         coverage_col="PI_Coverage_10_90",
         n_bins=10,
         binning="quantile",   # "quantile" or "width"
-        pdf_path="coverage_vs_target.pdf"):
+        ):
     df = df.copy()
     # --- choose binning strategy ---
     if binning == "quantile":
@@ -176,18 +189,25 @@ def plot_coverage_vs_target_pdf(
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(pdf_path, format="pdf")
+    if args.log_trans:
+        plot_path = os.path.join(result_dir, args.dataset+"_logtrans_coverage_plot.pdf")
+    elif args.box_cox:
+        plot_path = os.path.join(result_dir, args.dataset+"_boxcox_coverage_plot.pdf")
+    else:
+        plot_path = os.path.join(result_dir, args.dataset+"_coverage_plot.pdf")   
+    plt.savefig(plot_path, format="pdf")
     plt.close()
     return stats
 
 def plot_coverage_vs_prefixlen_pdf(
         args,
         df,
+        result_dir,
         prefix_col="Prefix_length",
         coverage_col="PI_Coverage_10_90",
         n_bins=10,
         binning="quantile",   # "quantile" or "width"
-        pdf_path="coverage_vs_prefixlen.pdf"):
+        ):
     
     df = df.copy()
     # --- choose binning strategy ---
@@ -222,7 +242,13 @@ def plot_coverage_vs_prefixlen_pdf(
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(pdf_path, format="pdf")
+    if args.log_trans:
+        plot_path = os.path.join(result_dir, args.dataset+"_logtrans_coverage_plot_prefix_length.pdf")
+    elif args.box_cox:
+        plot_path = os.path.join(result_dir, args.dataset+"_boxcox_coverage_plot_prefix_length.pdf")
+    else:
+        plot_path = os.path.join(result_dir, args.dataset+"_coverage_plot_prefix_length.pdf")
+    plt.savefig(plot_path, format="pdf")
     plt.close()
     return stats
 
@@ -231,12 +257,17 @@ def plot_coverage_vs_prefixlen_pdf(
 def sparsification_analysis_pdf(
         args,
         df,
+        result_dir,
         error_col="Absolute_error",
         uncertainty_col="PI_Width_10_90",
         n_steps=50,
-        n_random_runs=20,
-        pdf_path="sparsification.pdf"):
-    
+        n_random_runs=20):  
+    if args.log_trans:
+        plot_path = os.path.join(result_dir, args.dataset+"_logtrans_sparsification_plot.pdf")
+    elif args.box_cox:
+        plot_path = os.path.join(result_dir, args.dataset+"_boxcox_sparsification_plot.pdf")
+    else:
+        plot_path = os.path.join(result_dir, args.dataset+"_sparsification_plot.pdf")   
     err = df[error_col].to_numpy()
     unc = df[uncertainty_col].to_numpy()
     N = len(err)
@@ -275,8 +306,8 @@ def sparsification_analysis_pdf(
     plt.title(f"{args.dataset}: Sparsification Curve")
     plt.legend()
     plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(pdf_path.replace(".pdf","_curves.pdf"))
+    plt.tight_layout()    
+    plt.savefig(plot_path.replace(".pdf","_curves.pdf"))
     plt.close()
     # ----- sparsification error plot -----
     plt.figure(figsize=(7,5))
@@ -287,7 +318,7 @@ def sparsification_analysis_pdf(
     plt.title(f"{args.dataset}: Sparsification Error Curve\nAUSE={ause:.4f}  AURG={aurg:.4f}")
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(pdf_path.replace(".pdf","_error.pdf"))
+    plt.savefig(plot_path.replace(".pdf","_error.pdf"))
     plt.close()
     return {
         "AUSE": float(ause),
@@ -321,6 +352,15 @@ def evaluate_extreme_detection(df, target_q=0.9,
         "P@20%": p_at(0.20),
     }
 
+def get_seed_results(args, result_dir, seed):
+    if args.log_trans:
+        df_name = args.dataset+'_'+args.model+'_quantile_wos_logtrans_seed'+str(seed)+'_inference.csv'
+    elif args.box_cox:
+        df_name = args.dataset+'_'+args.model+'_quantile_wos_boxcox_seed'+str(seed)+'_inference.csv'
+    else:
+        df_name = args.dataset+'_'+args.model+'_quantile_wos_seed'+str(seed)+'_inference.csv'    
+    df = pd.read_csv(os.path.join(result_dir,df_name))
+    return df
 
 def main():
     parser = argparse.ArgumentParser(
@@ -329,6 +369,10 @@ def main():
     parser.add_argument('--model', type=str, default='DALSTM',
                         choices=['DALSTM', 'PT'],
                         help='Remaining Time Prediction Baseline Model')
+    parser.add_argument('--log_trans', action='store_true', default=False, 
+                        help='Whether to use log transformation on target variable') 
+    parser.add_argument('--box_cox', action='store_true', default=False, 
+                        help='Whether to use Box-Cox transformation on target variable')     
     args = parser.parse_args()
     root_path = os.getcwd()
     result_dir = os.path.join(root_path, 'results', args.model, args.dataset)
@@ -336,32 +380,24 @@ def main():
     # aggregate quntile results
     df_lst = []
     for seed in seeds:
-        df_name = args.dataset+'_'+args.model+'_quantile_wos_seed'+str(seed)+'_inference.csv'
-        df = pd.read_csv(os.path.join(result_dir,df_name))
+        df = get_seed_results(args, result_dir, seed)
         df_lst.append(df)
     agg_df = aggregate_quantile_seed_dfs(df_lst)
-    # visualization
-    plot_path = os.path.join(result_dir, args.dataset+"_uncertainty_plot.pdf")
+    # visualization    
     _ = plot_uncertainty_vs_target_pdf(
-        args, agg_df, n_bins=10, pdf_path=plot_path,
-        uncertainty_col="Total_uncertainty")
-    plot_path = os.path.join(result_dir, args.dataset+"_uncertainty_plot_prefix_length.pdf")
+        args, agg_df, result_dir, n_bins=10, uncertainty_col="PI_Width_10_90")    
     _ = plot_uncertainty_vs_prefixlen_pdf(
-        args, agg_df, n_bins=10, pdf_path=plot_path,
-        uncertainty_col="Total_uncertainty")    
+        args, agg_df, result_dir, n_bins=10, uncertainty_col="PI_Width_10_90") 
     inside = agg_df["PI_Coverage_10_90"].sum()
     total = len(agg_df)
-    print(f"Coverage: {inside}/{total} = {inside/total:.3f}")
-    plot_path = os.path.join(result_dir, args.dataset+"_coverage_plot.pdf")
-    plot_coverage_vs_target_pdf(args, agg_df, pdf_path=plot_path)
-    plot_path = os.path.join(result_dir, args.dataset+"_coverage_plot_prefix_length.pdf")
-    plot_coverage_vs_prefixlen_pdf(args, agg_df, pdf_path=plot_path)
-    plot_path = os.path.join(result_dir, args.dataset+"_sparsification_plot.pdf")
-    res = sparsification_analysis_pdf(args, agg_df, pdf_path=plot_path,
-                                      uncertainty_col="Total_uncertainty")
+    print(f"Coverage: {inside}/{total} = {inside/total:.3f}")    
+    plot_coverage_vs_target_pdf(args, agg_df, result_dir)  
+    plot_coverage_vs_prefixlen_pdf(args, agg_df, result_dir)  
+    res = sparsification_analysis_pdf(args, agg_df, result_dir, 
+                                      uncertainty_col="PI_Width_10_90")    
     print(res["AUSE"], res["AURG"])
     delay_performace = evaluate_extreme_detection(agg_df, target_q=0.8,
-                                                  uncertainty_col="Total_uncertainty")
+                                                  uncertainty_col="PI_Width_10_90")
     print(delay_performace)
    
 

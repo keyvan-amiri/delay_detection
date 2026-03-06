@@ -51,7 +51,7 @@ class DALSTM_preprocessing ():
         else:
             print("No lifecycle column in the log!")
         # Define relevant attributes
-        attributes = self.event_attributes
+        attributes = list(self.event_attributes)
         if self.log_ids.resource is not None:
             attributes.append(self.log_ids.resource)
         # Handling special cases for input event logs
@@ -85,7 +85,9 @@ class DALSTM_preprocessing ():
             val_df, prev_values=values)
         (X_test, y_test, test_lengths), _ = dalstm_load_dataset(
             test_df, prev_values=values)
-        # get list of case_ids in the test set for inference dataframe
+        # get list of case_ids in the train, val, test sets
+        train_cases = expand_case_ids(train_df, self.log_ids) 
+        val_cases = expand_case_ids(val_df, self.log_ids) 
         test_cases = expand_case_ids(test_df, self.log_ids)        
         # normalize tensors
         X_train, X_val, X_test = normalize_tensors(X_train, X_val, X_test)
@@ -130,9 +132,17 @@ class DALSTM_preprocessing ():
         torch.save(y_test, self.args.y_test_path)
         print('shape of features:', X_train.shape)
         print('shape of labels:', y_train.shape)
-        # save test prefix lengths, and test case ids
+        # save prefix lengths, and case ids
+        with open(self.args.train_length_path, 'wb') as file:
+            pickle.dump(train_lengths, file)
+        with open(self.args.val_length_path, 'wb') as file:
+            pickle.dump(valid_lengths, file)
         with open(self.args.test_length_path, 'wb') as file:
             pickle.dump(test_lengths, file)
+        with open(self.args.train_cases_path, 'wb') as file:
+            pickle.dump(train_cases, file)
+        with open(self.args.val_cases_path, 'wb') as file:
+            pickle.dump(val_cases, file)
         with open(self.args.test_cases_path, 'wb') as file:
             pickle.dump(test_cases, file)
         # save input_size to be used in the definition of model
