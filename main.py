@@ -24,6 +24,20 @@ from src.LSTM.Preprocess_DALSTM import DALSTM_preprocessing
 from src.utils.smogn import smogn_augment_and_save
 
 
+def _format_smogn_value(value):
+    value_str = f"{value:g}"
+    return value_str.replace('.', 'p').replace('-', 'm')
+
+
+def _build_sampling_tag(args):
+    if getattr(args, 'sampling', 'None') != 'SMOGN':
+        return getattr(args, 'sampling', 'None')
+    rel = _format_smogn_value(args.smogn_rel_thres)
+    over = _format_smogn_value(args.smogn_over_ratio)
+    under = _format_smogn_value(args.smogn_under_ratio)
+    return f"SMOGN_rel{rel}_over{over}_under{under}"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Imbalanced Regression for Remaining Time Prediction')
@@ -41,6 +55,12 @@ def main():
     parser.add_argument('--sampling', type=str, default='None',
                         choices=['None', 'SMOGN'],
                         help='Sampling-based oversampling approach (pre-processing)')
+    parser.add_argument('--smogn_rel_thres', type=float, default=0.8,
+                        help='SMOGN relevance threshold for rare-target detection')
+    parser.add_argument('--smogn_over_ratio', type=float, default=5.0,
+                        help='SMOGN oversampling ratio for rare samples')
+    parser.add_argument('--smogn_under_ratio', type=float, default=0.3,
+                        help='SMOGN undersampling ratio for normal samples')
     parser.add_argument('--heteroscedastic', action='store_true', default=False, 
                         help='Whether to use heteroscedastic regression')    
     args = parser.parse_args()
@@ -48,6 +68,7 @@ def main():
     cfg_file = args.cfg if args.cfg is not None else args.dataset + '.yaml'       
     with open(os.path.join(args.root_path, 'cfg', cfg_file) , 'r') as f:
         cfg = yaml.safe_load(f)
+    args.sampling_tag = _build_sampling_tag(args)
     args, exp_ids, smooth_str = define_experiments(args)
     args = add_arguments(args, cfg)
     log, log_ids = get_event_log(args, cfg)
@@ -99,7 +120,7 @@ def main():
             best_par_lst.append(best_parameters)
             metric_lst.append(gmm_dict)
         exp_dict = weighted_metrics(metric_lst, gmm_freq_lst)
-        sampling_tag = getattr(args, 'sampling', 'None')
+        sampling_tag = getattr(args, 'sampling_tag', getattr(args, 'sampling', 'None'))
         results[(args.IR, smooth, sampling_tag)] = {
             'best_params': best_par_lst,
             'performance': exp_dict}

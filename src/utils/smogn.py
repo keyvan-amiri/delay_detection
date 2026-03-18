@@ -22,6 +22,18 @@ from src.utils.relevance_scores import phi_control, phi
 from src.utils.GMM import fit_label_gmm, train_lstm_and_predict_test_components
 
 
+def _format_param(value: float) -> str:
+    value_str = f"{value:g}"
+    return value_str.replace(".", "p").replace("-", "m")
+
+
+def _build_smogn_param_tag(args) -> str:
+    rel = _format_param(float(getattr(args, "smogn_rel_thres", 0.5)))
+    over = _format_param(float(getattr(args, "smogn_over_ratio", 10.0)))
+    under = _format_param(float(getattr(args, "smogn_under_ratio", 0.2)))
+    return f"rel{rel}_over{over}_under{under}"
+
+
 # ---------------------------------------------------------------------------
 # Helper: derive actual prefix lengths from left-padded 3D tensor
 # ---------------------------------------------------------------------------
@@ -316,7 +328,13 @@ def smogn_augment_and_save(args, overwrite: bool = False):
     y_np = y_train.float().numpy()
 
     print("[SMOGN] Applying prefix-length-aware SMOGN ...")
-    X_aug, y_aug = apply_smogn(X_np, y_np)
+    X_aug, y_aug = apply_smogn(
+        X_np,
+        y_np,
+        rel_thres=float(getattr(args, "smogn_rel_thres", 0.5)),
+        over_ratio=float(getattr(args, "smogn_over_ratio", 10.0)),
+        under_ratio=float(getattr(args, "smogn_under_ratio", 0.2)),
+    )
 
     # Convert back to tensors (preserve dtype of originals)
     X_aug_t = torch.tensor(X_aug, dtype=X_train.dtype)
@@ -333,6 +351,18 @@ def smogn_augment_and_save(args, overwrite: bool = False):
     z_train_aug, _ = fit_label_gmm(y_aug_t, y_val)
     torch.save(z_train_aug, args.z_train_smogn_path)
     print(f"[SMOGN] Saved augmented z_train: {z_train_aug.shape}")
+
+    # Save run-specific train+val remaining-time values for downstream analysis.
+    param_tag = _build_smogn_param_tag(args)
+    rt_out_name = (
+        f"{args.dataset}_SMOGN_train_val_remaining_time_{param_tag}.txt"
+    )
+    rt_out_path = os.path.join(args.process_path, rt_out_name)
+    y_concat = torch.cat([y_aug_t.view(-1), y_val.view(-1)], dim=0).tolist()
+    with open(rt_out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(f"{float(v):.10g}" for v in y_concat))
+        f.write("\n")
+    print(f"[SMOGN] Saved run-specific train+val remaining times: {rt_out_path}")
 
     # Re-predict z_test using augmented train GMM labels
     X_val = torch.load(args.X_val_path, weights_only=True)

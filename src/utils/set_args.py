@@ -118,7 +118,7 @@ def update_paths_for_sampling(args):
     return args
 
 def handle_experiment(args, exp_str):
-    sampling_tag = getattr(args, 'sampling', 'None')
+    sampling_tag = getattr(args, 'sampling_tag', getattr(args, 'sampling', 'None'))
     if sampling_tag != 'None':
         args.model_name = (args.dataset + '_' + args.model + '_' + args.IR
                            + '_' + sampling_tag + '_' + exp_str + '_')
