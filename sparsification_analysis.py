@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Wed Feb 25 12:41:32 2026
-@author: kamirel
 """
 
 import os
@@ -13,10 +12,13 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-def get_quantile_results(result_dir=None, dataset=None, model=None, seed=None):
-    quantile_name = f"{dataset}_{model}_quantile_wos_seed{seed}_inference.csv"
-    quantile_df = pd.read_csv(os.path.join(result_dir, quantile_name))
-    return quantile_df
+def get_inference_results(result_dir=None, dataset=None, model=None, seed=None, mode='quantile'):
+    if mode=='quantile':
+        df_name = f"{dataset}_{model}_quantile_wos_seed{seed}_inference.csv"
+    elif mode=='survival':
+        df_name = f"{dataset}_{model}_survival_wos_seed{seed}_inference.csv"
+    df = pd.read_csv(os.path.join(result_dir, df_name))
+    return df
 
 
 def get_target_stats(temp_dir, model_name, dataset):
@@ -39,6 +41,7 @@ def aggregate_quantile_across_seeds(
     seeds,
     error_col="Absolute_error",
     uncertainty_col="PI_Width_10_90",
+    mode='quantile',
 ):
     """
     Align rows across seeds by instance ID and compute mean error/uncertainty per instance.
@@ -46,22 +49,20 @@ def aggregate_quantile_across_seeds(
     dfs = []
 
     for seed in seeds:
-        df = get_quantile_results(
+        df = get_inference_results(
             result_dir=result_dir,
             dataset=dataset,
             model=model_name,
             seed=seed,
+            mode=mode,
         ).copy()
-
         keep_cols = ["Case_id", "Prefix_length", "GroundTruth", error_col, uncertainty_col]
         df = df[keep_cols].copy()
-
         df = df.rename(columns={
             error_col: f"{error_col}_seed{seed}",
             uncertainty_col: f"{uncertainty_col}_seed{seed}",
         })
         dfs.append(df)
-
     merged = dfs[0]
     for df in dfs[1:]:
         merged = merged.merge(
@@ -69,13 +70,10 @@ def aggregate_quantile_across_seeds(
             on=["Case_id", "Prefix_length", "GroundTruth"],
             how="inner"
         )
-
     err_cols = [f"{error_col}_seed{seed}" for seed in seeds]
     unc_cols = [f"{uncertainty_col}_seed{seed}" for seed in seeds]
-
     merged["Mean_Absolute_error"] = merged[err_cols].mean(axis=1)
     merged["Mean_PI_Width_10_90"] = merged[unc_cols].mean(axis=1)
-
     return merged
 
 
@@ -192,11 +190,39 @@ def sparsification_analysis_pdf(
 def main():
     # ---- settings ----
     model_name = "DALSTM"
-    datasets = ["P2P", "Sepsis", "BPIC15_1", "BPIC_2017_W", "BPIC20ID", "BPIC20DD", "BPIC20PTC"]
-    seeds = [409, 1824, 3657, 4012, 4506]
-
+    datasets = [
+        "P2P",
+        "BPIC_2017_W",
+        "BPIC15_1",
+        "BPIC15_2",
+        "BPIC15_3",
+        "BPIC15_4",
+        "BPIC15_5",
+        "HelpDesk",
+        "Sepsis",
+        "BPIC20ID",
+        "BPIC20DD",
+        "BPIC20PTC",
+        "BPIC20TPD",
+        "BPIC20RFP",
+    ] 
+    datasets = [
+        "P2P",
+        "BPIC15_2",
+        "BPIC15_4",
+        "BPIC15_5",
+        "HelpDesk",
+        "Sepsis",
+        "BPIC20ID",
+        "BPIC20DD",
+        "BPIC20PTC",
+        "BPIC20TPD",
+        "BPIC20RFP",
+    ] 
+    seeds = [409, 1824, 3657, 4012, 4506]    
+    uncertainty_model = 'survival' # 'quantile' 'survival'
     error_col = "Absolute_error"
-    uncertainty_col = "PI_Width_10_90"
+    uncertainty_col = "PI80_width" #"PI_Width_10_90" "PI80_width" "PI90_width" "Tail_mass"
 
     # ---- paths ----
     root_path = os.getcwd()
@@ -220,6 +246,7 @@ def main():
             seeds=seeds,
             error_col=error_col,
             uncertainty_col=uncertainty_col,
+            mode = uncertainty_model,
         )
 
         # sparsification on seed-averaged values

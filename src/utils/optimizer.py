@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Wed Sep 10 13:37:26 2025
-@author: kamirel
 """
 import torch.optim as optim
 

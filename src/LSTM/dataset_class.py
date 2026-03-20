@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Wed Sep 17 12:33:48 2025
-@author: Keyvan Amiri Elyasi
 """
 import torch
 from torch.utils.data import Dataset

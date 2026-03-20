@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon Sep 22 09:04:23 2025
-@author: Keyvan Amiri Elyasi
 """
 import pickle
 import torch
@@ -51,7 +50,12 @@ def get_DALSTM_model(args, cfg, device=None):
         model = DALSTMQuantileModel(
             input_size=input_size, hidden_size=hidden_size, n_layers=n_layers,
             dropout=dropout, p_fix=dropout_prob,
-            quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99)).to(device)        
+            quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99)).to(device)   
+    elif args.IR == 'survival':
+        model = DALSTMSurvivalModel(
+            input_size=input_size, hidden_size=hidden_size, n_layers=n_layers,
+            dropout=dropout, p_fix=dropout_prob,
+            num_bins=args.surv_num_bins).to(device)
     elif args.heteroscedastic:
         model = DALSTMModelMve(
             input_size=input_size, hidden_size=hidden_size,
@@ -113,15 +117,6 @@ class DALSTMModel(nn.Module):
 
     def forward(self, x):
         x = x.float()
-        """
-        for i, (lstm, ln) in enumerate(zip(self.lstm_layers, self.layer_norms)):
-            if i == 0:
-                x, (h, c) = self._apply_lstm_with_dropout(lstm, x)
-            else:
-                x, (h, c) = self._apply_lstm_with_dropout(lstm, x, h, c)
-            # LayerNorm over feature dimension (B, T, H)
-            x = ln(x)
-        """
         for i, (lstm, ln) in enumerate(zip(self.lstm_layers, self.layer_norms)):
             x, (h, c) = self._apply_lstm_with_dropout(lstm, x)  # each layer has its own (h,c)
             x = ln(x)
@@ -491,3 +486,100 @@ class DALSTMQuantileModel(nn.Module):
         if self.return_squeezed and self.nq == 1:
             return q_pred.squeeze(dim=1)
         return q_pred
+    
+class DALSTMSurvivalModel(nn.Module):
+    """
+    Same DALSTM backbone, but outputs one logit per time bin.
+    Logits correspond to discrete-time hazard logits.
+    """
+    def __init__(self, input_size=None, hidden_size=None, n_layers=None,
+                 dropout=True, p_fix=0.2, num_bins=20):
+        super(DALSTMSurvivalModel, self).__init__()
+
+        self.n_layers = n_layers
+        self.hidden_size = hidden_size
+        self.dropout = dropout
+        self.num_bins = num_bins
+        self.lstm_layers = nn.ModuleList()
+        self.batch_norms = nn.ModuleList()
+        self.lstm_layers.append(
+            nn.LSTM(input_size=input_size, hidden_size=hidden_size, batch_first=True))
+        self.batch_norms.append(nn.BatchNorm1d(hidden_size))
+        for _ in range(n_layers - 1):
+            self.lstm_layers.append(
+                nn.LSTM(input_size=hidden_size, hidden_size=hidden_size, batch_first=True))
+            self.batch_norms.append(nn.BatchNorm1d(hidden_size))
+        self.dropout_layer = nn.Dropout(p_fix) if dropout else nn.Identity()
+        self.linear1 = nn.Linear(hidden_size, num_bins)
+        nn.init.xavier_uniform_(self.linear1.weight, gain=0.1)
+        nn.init.constant_(self.linear1.bias, -2.0)
+
+    def forward(self, x):
+        x = x.float()
+        for i, lstm in enumerate(self.lstm_layers):
+            x, _ = lstm(x)
+            x = x[:, -1, :]  # final hidden state at sequence end
+            x = self.batch_norms[i](x)
+            x = self.dropout_layer(x)
+            if i < len(self.lstm_layers) - 1:
+                x = x.unsqueeze(1).repeat(1, 1, 1)
+        logits = self.linear1(x)   # [B, num_bins]
+        return logits
+    
+class DALSTMClassifier(nn.Module):
+    def __init__(self, input_size=None, hidden_size=None, n_layers=None,
+                 dropout=True, p_fix=0.2, exclude_last_layer=False,
+                 return_squeezed=True):
+        super(DALSTMClassifier, self).__init__()
+
+        self.n_layers = n_layers
+        self.hidden_size = hidden_size
+        self.exclude_last_layer = exclude_last_layer
+        self.return_squeezed = return_squeezed
+        self.dropout = dropout
+
+        self.lstm_layers = nn.ModuleList()
+        for i in range(n_layers):
+            input_dim = input_size if i == 0 else hidden_size
+            self.lstm_layers.append(
+                nn.LSTM(input_dim, hidden_size, batch_first=True)
+            )
+
+        self.layer_norms = nn.ModuleList([
+            nn.LayerNorm(hidden_size) for _ in range(n_layers)
+        ])
+
+        if self.dropout:
+            self.recurrent_dropout = nn.Dropout(p_fix)
+
+        if not self.exclude_last_layer:
+            self.linear1 = nn.Linear(hidden_size, 1)   # binary logit output
+
+    def _apply_lstm_with_dropout(self, lstm, x, h_prev=None, c_prev=None):
+        batch_size = x.size(0)
+
+        if h_prev is None:
+            h = torch.zeros(1, batch_size, self.hidden_size, device=x.device)
+            c = torch.zeros(1, batch_size, self.hidden_size, device=x.device)
+        else:
+            h, c = h_prev, c_prev
+
+        if self.training and self.dropout:
+            h = self.recurrent_dropout(h)
+            c = self.recurrent_dropout(c)
+
+        return lstm(x, (h, c))
+
+    def forward(self, x):
+        x = x.float()
+        for i, (lstm, ln) in enumerate(zip(self.lstm_layers, self.layer_norms)):
+            x, (h, c) = self._apply_lstm_with_dropout(lstm, x)
+            x = ln(x)
+
+        last_output = x[:, -1, :]
+
+        if not self.exclude_last_layer:
+            logits = self.linear1(last_output)
+            return logits.squeeze(dim=1) if self.return_squeezed else logits
+        else:
+            return last_output

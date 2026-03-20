@@ -1,24 +1,98 @@
 # -*- coding: utf-8 -*-
 """
 Created on Wed Sep 10 07:50:00 2025
-@author: Keyvan Amiri Elyasi
 """
+import os
+import pickle
 import numpy as np
 import pandas as pd
 import torch
-import pickle
+from torch.utils.data import DataLoader
 
 from src.utils.data_split import split_cases
 from src.LSTM.Load_DALSTM import dalstm_load_dataset
 from src.LSTM.Load_DALSTM import pad_arrays, normalize_tensors
 from src.LSTM.Load_DALSTM import remove_small_values, check_processed_tensors
+from src.LSTM.load_dataset import get_train_params
 from src.utils.case_durations import expand_case_ids
-from src.utils.GMM import fit_label_gmm
+from src.LSTM.dataset_class import DALSTM_dataset
+from src.LSTM.model_DALSTM import DALSTMModel
+from src.utils.loss_functions import weighted_l1_loss
+from src.LSTM.Train_DALSTM import train_epoch, validate_epoch
 from src.utils.GMM import train_lstm_and_predict_test_components
+from src.utils.GMM import fit_joint_behavior_time_gmm, extract_prefix_embeddings
+#from src.utils.GMM import fit_label_gmm
 
+def compute_quantile_bin_edges(y_train: torch.Tensor, num_bins: int):
+    """
+    Compute quantile-based bin edges from train targets only.
+    Returns a 1D torch tensor of shape [num_bins + 1].
+    """
+    y_np = y_train.detach().cpu().view(-1).numpy().astype(np.float64)
+    # quantiles from 0 to 1
+    q = np.linspace(0.0, 1.0, num_bins + 1)
+    edges = np.quantile(y_np, q)
+    # make strictly nondecreasing and robust to repeated quantiles
+    edges = np.asarray(edges, dtype=np.float64)
+    edges[0] = min(edges[0], y_np.min())
+    edges[-1] = max(edges[-1], y_np.max())
+    # if some quantile edges collapse, force tiny monotone increments
+    for i in range(1, len(edges)):
+        if edges[i] <= edges[i - 1]:
+            edges[i] = edges[i - 1] + 1e-8
+    return torch.tensor(edges, dtype=torch.float32)
+
+def compute_survival_bin_edges(
+        y_train: torch.Tensor,
+        num_bins: int,
+        method: str = "quantile",
+        tail_frac: float = 0.2,
+        tail_bin_frac: float = 0.4):
+    """
+    Build survival bin edges from TRAIN targets only.
+    method:
+        - "quantile"
+        - "uniform"
+        - "hybrid_tail"
+
+    hybrid_tail:
+        allocate more bins to the top tail_frac region.
+    """
+    y_np = y_train.detach().cpu().view(-1).numpy().astype(np.float64)
+    y_np = np.sort(y_np)
+    if method == "quantile":
+        q = np.linspace(0.0, 1.0, num_bins + 1)
+        edges = np.quantile(y_np, q)
+    elif method == "uniform":
+        edges = np.linspace(y_np.min(), y_np.max(), num_bins + 1)
+    elif method == "hybrid_tail":
+        tail_frac = float(tail_frac)
+        tail_bin_frac = float(tail_bin_frac)
+        tail_frac = min(max(tail_frac, 0.05), 0.5)
+        tail_bin_frac = min(max(tail_bin_frac, 0.2), 0.8)
+        tail_bins = max(2, int(round(num_bins * tail_bin_frac)))
+        head_bins = num_bins - tail_bins
+        if head_bins < 2:
+            head_bins = 2
+            tail_bins = num_bins - head_bins
+        split_q = 1.0 - tail_frac
+        q_head = np.linspace(0.0, split_q, head_bins + 1)
+        q_tail = np.linspace(split_q, 1.0, tail_bins + 1)
+        head_edges = np.quantile(y_np, q_head)
+        tail_edges = np.quantile(y_np, q_tail)
+        edges = np.concatenate([head_edges[:-1], tail_edges])
+    else:
+        raise ValueError(f"Unknown survival binning method: {method}")
+    edges = np.asarray(edges, dtype=np.float64)
+    edges[0] = min(edges[0], y_np.min())
+    edges[-1] = max(edges[-1], y_np.max())
+    for i in range(1, len(edges)):
+        if edges[i] <= edges[i - 1]:
+            edges[i] = edges[i - 1] + 1e-8
+    return torch.tensor(edges, dtype=torch.float32)
 
 class DALSTM_preprocessing ():      
-    def __init__ (self, log, log_ids, args, overwrite=False, 
+    def __init__ (self, log, log_ids, args, cfg, overwrite=False, 
                   perform_lifecycle_trick=None, threshold=0.0):
         self.dataset_name = args.dataset
         files_exist = check_processed_tensors(args)
@@ -26,6 +100,7 @@ class DALSTM_preprocessing ():
             self.log = log.copy()
             self.log_ids = log_ids
             self.args = args
+            self.cfg = cfg
             self.event_attributes = log_ids.event_cat_features
             # to exclude prefixes with very small remaining times 
             self.threshold = threshold 
@@ -35,7 +110,71 @@ class DALSTM_preprocessing ():
             self.executute_pipeline()         
         else:
             print(f"For '{self.dataset_name}' DALST preprocessing is already done.")
-        
+            
+    # function for feature-based GMM
+    def _train_backbone_for_embeddings(self, X_train, y_train, X_val, y_val, input_size):
+        """
+        Train one vanilla DALSTM once and return an encoder version
+        (same weights, last linear layer removed) for embedding extraction.
+        """
+        device = f'cuda:{os.environ.get("CUDA_VISIBLE_DEVICES", "0")}' if torch.cuda.is_available() else 'cpu'
+        n_layers = self.cfg['DALSTM']['n_layers'] or 2
+        hidden_size = self.cfg['DALSTM']['hidden_size'] or 150
+        dropout = self.cfg['DALSTM']['dropout']
+        if dropout is None:
+            dropout = True
+        dropout_prob = self.cfg['DALSTM']['dropout_prob'] or 0.1
+        batch_size = self.cfg['DALSTM']['batch_size']
+        max_epochs, early_stop, patience, min_delta = get_train_params(self.cfg)
+        # keep preprocessing practical
+        max_epochs = min(max_epochs, 50)
+        train_dataset = DALSTM_dataset(X_train, y_train, args=None)
+        val_dataset = DALSTM_dataset(X_val, y_val, args=None)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        model = DALSTMModel(
+            input_size=input_size, hidden_size=hidden_size, n_layers=n_layers,
+            dropout=dropout, p_fix=dropout_prob, exclude_last_layer=False).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+        criterion = weighted_l1_loss
+        best_val = float("inf")
+        best_state = None
+        current_patience = 0
+        for epoch in range(max_epochs):
+            _ = train_epoch(
+                model=model, train_loader=train_loader, criterion=criterion,
+                optimizer=optimizer, epoch=epoch, bmse=False, fds_model=False,
+                heteroscedastic=False, quantile_regression=False,
+                device=device)
+            val_loss = validate_epoch(
+                model=model, val_loader=val_loader, criterion=criterion,
+                epoch=epoch, hpo_mode=True, bmse=False, fds_model=False,
+                heteroscedastic=False, quantile_regression=False,
+                device=device)
+            if val_loss < best_val - min_delta:
+                best_val = val_loss
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                current_patience = 0
+            else:
+                current_patience += 1
+                if early_stop and current_patience >= patience:
+                    break
+        if best_state is not None:
+            model.load_state_dict(best_state)
+        # Build encoder-only model and copy shared weights
+        encoder = DALSTMModel(
+            input_size=input_size, hidden_size=hidden_size, n_layers=n_layers,
+            dropout=dropout, p_fix=dropout_prob, exclude_last_layer=True).to(device)
+        encoder_state = encoder.state_dict()
+        trained_state = model.state_dict()
+        filtered = {
+            k: v for k, v in trained_state.items()
+            if k in encoder_state and not k.startswith("linear1")}
+        encoder_state.update(filtered)
+        encoder.load_state_dict(encoder_state, strict=False)
+        encoder.eval()
+        return encoder  
+      
     # Execute some basic preprocessing steps
     def executute_pipeline(self, time_format="%Y-%m-%d %H:%M:%S"):  
         pd_log = self.log
@@ -148,10 +287,42 @@ class DALSTM_preprocessing ():
         # save input_size to be used in the definition of model
         with open(self.args.input_size_path, 'wb') as file:
             pickle.dump(input_size, file) 
+        # Save survival bin edges computed from TRAIN targets only
+        surv_bin_edges = compute_quantile_bin_edges(
+            y_train, num_bins=self.args.surv_num_bins)
+        torch.save(surv_bin_edges, self.args.surv_bin_edges_path)
         # Apply mixture of Gaussian to remaining time prediction (two-step approach)
-        z_train, z_val = fit_label_gmm(y_train, y_val)
-        z_test, _, _ = train_lstm_and_predict_test_components(
+        # Behavior + time clustering:
+        # 1) train one global DALSTM backbone
+        # 2) extract prefix embeddings
+        # 3) fit GMM on [embedding, scaled y]
+        # 4) train router on X -> z as before
+        encoder = self._train_backbone_for_embeddings(
+            X_train, y_train, X_val, y_val, input_size)
+        device = f'cuda:{os.environ.get("CUDA_VISIBLE_DEVICES", "0")}' if torch.cuda.is_available() else 'cpu'
+        emb_batch_size = self.cfg['DALSTM']['test_batch_size'] or 512
+        H_train = extract_prefix_embeddings(
+            encoder, X_train, batch_size=emb_batch_size, device=device)
+        H_val = extract_prefix_embeddings(
+            encoder, X_val,   batch_size=emb_batch_size, device=device)
+        H_test = extract_prefix_embeddings(
+            encoder, X_test,  batch_size=emb_batch_size, device=device)
+        # y_weight controls how much the target contributes relative to behavior
+        # pca_dim controls how much embedding compression is used before GMM
+        # lower y_weight = more behavior-driven clusters
+        # higher y_weight = more time-driven clusters
+        z_train, z_val, joint_meta = fit_joint_behavior_time_gmm(
+            H_train=H_train, H_val=H_val, y_train=y_train, y_val=y_val,
+            y_weight=1.0, pca_dim=16, min_fraction_per_component=0.10, 
+            max_components=10, covariance_type="diag", n_init=10, 
+            reg_covar=1e-6, random_state=0,)
+        z_test, p_test, _, _ = train_lstm_and_predict_test_components(
             X_train, X_val, X_test, z_train, z_val, y_test)
+        """
+        z_train, z_val = fit_label_gmm(y_train, y_val)
+        z_test, p_test, _, _ = train_lstm_and_predict_test_components(
+            X_train, X_val, X_test, z_train, z_val, y_test)
+        """
         # get statistics
         num_comp = int(max(z_train.max(), z_val.max()).item()) + 1
         train_freq = torch.bincount(z_train.view(-1), minlength=num_comp).float() / z_train.numel()
@@ -167,4 +338,5 @@ class DALSTM_preprocessing ():
         torch.save(z_train, self.args.z_train_path)
         torch.save(z_val, self.args.z_val_path)
         torch.save(z_test, self.args.z_test_path)
+        torch.save(p_test, self.args.p_test_path)
         print('Preprocessing is done.')

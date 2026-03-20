@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Thu Sep 18 10:15:50 2025
-@author: kamirel
 """
 import numpy as np
 from scipy.interpolate import PchipInterpolator

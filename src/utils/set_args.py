@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Sep  9 13:29:37 2025
-@author: Keyvan Amiri Elyasi
 """
 import os
 import logging
@@ -12,7 +11,7 @@ import torch
 def define_experiments(args):
     args.bmse = False
     args.sera = False
-    if args.IR in {'Vanilla', 'quantile', 'GMM'}:
+    if args.IR in {'Vanilla', 'quantile', 'GMM', 'survival'}:
         exp_ids = [1]
         smooth_str = ['wos']
     elif args.IR in {'CSW', 'EAL'}:
@@ -84,7 +83,9 @@ def add_DALSTM_paths(args):
     args.z_val_path = os.path.join(
         args.process_path, "DALSTM_z_val_"+args.dataset+".pt")
     args.z_test_path = os.path.join(
-        args.process_path, "DALSTM_z_test_"+args.dataset+".pt")    
+        args.process_path, "DALSTM_z_test_"+args.dataset+".pt")   
+    args.p_test_path = os.path.join(
+        args.process_path, "DALSTM_p_test_"+args.dataset+".pt")    
     args.train_length_path = os.path.join(
         args.process_path, "DALSTM_train_length_list_"+args.dataset+".pkl") 
     args.val_length_path = os.path.join(
@@ -99,6 +100,8 @@ def add_DALSTM_paths(args):
         args.process_path, "DALSTM_test_cases_"+args.dataset+".pkl")
     args.input_size_path = os.path.join(
         args.process_path, "DALSTM_input_size_"+args.dataset+".pkl")
+    args.surv_bin_edges_path = os.path.join(
+        args.process_path, "DALSTM_surv_bin_edges_"+args.dataset+".pt")   
     return args
 
 def handle_experiment(args, exp_str):
@@ -162,38 +165,22 @@ def get_num_component(args):
     return gmm_freq_lst, distinct_labels
 
 
-def add_result_paths(args, val_mode, gmm_label, seed):
+def add_result_paths(args, val_mode, seed):
     if val_mode:    
-        if args.IR == 'GMM':
-            if args.log_trans:
-                res_name = args.model_name+'logtrans_gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference_validation.csv'
-            elif args.box_cox:                
-                res_name = args.model_name+'boxcox_gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference_validation.csv'
-            else:
-                res_name = args.model_name+'gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference_validation.csv'
-        else:
-            if args.log_trans:
-                res_name = args.model_name+'logtrans_seed'+str(seed)+'_inference_validation.csv'
-            elif args.box_cox: 
-                res_name = args.model_name+'boxcox_seed'+str(seed)+'_inference_validation.csv'
-            else:                
-                res_name = args.model_name+'seed'+str(seed)+'_inference_validation.csv'
+        if args.log_trans:
+            res_name = args.model_name+'logtrans_seed'+str(seed)+'_inference_validation.csv'
+        elif args.box_cox: 
+            res_name = args.model_name+'boxcox_seed'+str(seed)+'_inference_validation.csv'
+        else:                
+            res_name = args.model_name+'seed'+str(seed)+'_inference_validation.csv'
         res_path = os.path.join(args.process_path, res_name)
     else:
-        if args.IR == 'GMM':
-            if args.log_trans:
-                res_name = args.model_name+'logtrans_gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference.csv'
-            elif args.box_cox:
-                res_name = args.model_name+'boxcox_gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference.csv'
-            else:
-                res_name = args.model_name+'gmm_'+str(gmm_label)+'_seed'+str(seed)+'_inference.csv'
+        if args.log_trans:
+            res_name = args.model_name+'logtrans_seed'+str(seed)+'_inference.csv'
+        elif args.box_cox:
+            res_name = args.model_name+'boxcox_seed'+str(seed)+'_inference.csv'
         else:
-            if args.log_trans:
-                res_name = args.model_name+'logtrans_seed'+str(seed)+'_inference.csv'
-            elif args.box_cox:
-                res_name = args.model_name+'boxcox_seed'+str(seed)+'_inference.csv'
-            else:
-                res_name = args.model_name+'seed'+str(seed)+'_inference.csv'        
+            res_name = args.model_name+'seed'+str(seed)+'_inference.csv'        
         res_path = os.path.join(args.result_path, res_name)
     return res_path
 

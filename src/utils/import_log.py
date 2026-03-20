@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Sep  9 13:32:43 2025
-@author: Keyvan Amiri Elyasi
 """
 import os
 import pandas as pd

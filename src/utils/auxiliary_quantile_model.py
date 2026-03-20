@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Thu Feb 19 16:28:13 2026
-@author: Keyvan Amiri Elyasi
 """
 from __future__ import annotations
 import os

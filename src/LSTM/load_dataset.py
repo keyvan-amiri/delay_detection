@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon Sep 22 09:04:23 2025
-@author: Keyvan Amiri Elyasi
 """
 import pickle
 from typing import Tuple
@@ -15,7 +14,7 @@ from src.utils.relevance_scores import phi_control, phi
 
 def get_train_params(cfg):
     # get training parameters
-    max_epochs = cfg['DALSTM']['max_epochs'] or 200
+    max_epochs = cfg['DALSTM']['max_epochs'] or 300
     early_stop = cfg['DALSTM']['early_stop']
     if early_stop is None:
         early_stop = True
@@ -23,7 +22,7 @@ def get_train_params(cfg):
     min_delta = cfg['DALSTM']['min_delta'] or 0   
     return (max_epochs, early_stop, patience, min_delta)
 
-def load_DALSTM_data(args, cfg, gmm_label=None):
+def load_DALSTM_data(args, cfg, gmm_label=None, full_test_for_gmm=True):
     # load data
     X_train, X_val, X_test, y_train, y_val, y_test, z_train, z_val, z_test, meta = load_data(args)
     print("Shapes:",
@@ -37,7 +36,10 @@ def load_DALSTM_data(args, cfg, gmm_label=None):
     if gmm_label is not None:
         X_train, y_train, _, _ = filter_by_gmm_label(X_train, y_train, z_train, gmm_label)
         X_val, y_val, _, _ = filter_by_gmm_label(X_val, y_val, z_val, gmm_label)
-        X_test, y_test, _, mask = filter_by_gmm_label(X_test, y_test, z_test, gmm_label)
+        if not full_test_for_gmm:
+            X_test, y_test, _, mask = filter_by_gmm_label(X_test, y_test, z_test, gmm_label)
+        else:
+            mask = None
         print("AFTER filter:", "gmm_label=", gmm_label,
               "y_train", y_train.shape, "y_val", y_val.shape, "y_test", y_test.shape)
     print("ABOUT TO CAT:", y_train.shape, y_val.shape)
@@ -79,7 +81,7 @@ def load_DALSTM_data(args, cfg, gmm_label=None):
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)   
     test_lengths, test_cases = load_test_lenght_and_ids(args)
-    if gmm_label is not None:
+    if gmm_label is not None and mask is not None:
         idx = mask.nonzero(as_tuple=True)[0].tolist()
         test_lengths = [test_lengths[i] for i in idx]
         test_cases   = [test_cases[i] for i in idx]

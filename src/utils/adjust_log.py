@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Sep  9 15:10:37 2025
-@author: Keyvan Amiri Elyasi
 """
 
 def align_column_names(df, log_ids, model='LSTM'):

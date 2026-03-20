@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Wed Sep 17 12:35:29 2025
-@author: Keyvan Amiri Elyasi
 """
 import numpy as np
 from scipy.ndimage import gaussian_filter1d

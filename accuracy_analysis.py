@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Wed Feb 25 12:41:32 2026
-@author: kamirel
 """
 import os
 import pandas as pd
@@ -9,6 +8,7 @@ import numpy as np
 import torch
 import re
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FormatStrFormatter
 from scipy.stats import friedmanchisquare, rankdata, studentized_range
 import warnings
 warnings.filterwarnings("ignore")
@@ -21,7 +21,9 @@ def get_inference_results(result_dir=None, labels_name=None, dataset=None, model
     eal_name  = f"{dataset}_{model}_EAL_wos_seed{seed}_inference.csv"
     bmse_name  = f"{dataset}_{model}_BMSE_wos_seed{seed}_inference.csv"
     sera_name  = f"{dataset}_{model}_SERA_wos_seed{seed}_inference.csv"
-    models_name = [vanilla_name, csw_name, eal_name, bmse_name, sera_name]
+    survival_name  = f"{dataset}_{model}_survival_wos_seed{seed}_inference.csv"
+    smogn_name = f"{dataset}_{model}_Vanilla_SMOGN_wos_seed{seed}_inference.csv"
+    models_name = [vanilla_name, smogn_name, csw_name, eal_name, bmse_name, sera_name, survival_name]
     df_lst = []
     for name in models_name:
         model_df = pd.read_csv(os.path.join(result_dir, name))
@@ -389,9 +391,14 @@ def save_nmae_boxplot_pdf(
             xs = [i + (j - (len(ys) - 1) / 2) * 0.03 for j in range(len(ys))]
             plt.scatter(xs, ys, s=18)
 
-    plt.ylabel(f"nMAE ({split})")
-    plt.xlabel("IR approach")
-    plt.xticks(rotation=30)
+    plt.ylabel("nMAE", fontsize=16, fontweight="bold")
+    #plt.ylabel(f"nMAE ({split})", fontsize=16, fontweight="bold")
+    #plt.xlabel("IR approach", fontsize=16, fontweight="bold")
+    plt.xticks(fontsize=14, fontweight="bold")
+    #plt.xticks(rotation=30, fontsize=14, fontweight="bold")
+    plt.yticks(fontsize=14, fontweight="bold")
+    if split == "medium":
+        plt.gca().yaxis.set_major_formatter(FormatStrFormatter('%.1f'))
     plt.tight_layout()
 
     plt.savefig(out_pdf, format="pdf")
@@ -507,6 +514,16 @@ def save_stats_summary_latex_table_compact(
                 pij = float(pmat.iloc[i, j])
                 if pij < alpha:
                     pairs.append(f"{cols[i]} vs {cols[j]} ({pij:.{p_decimals}f})")
+        return "None" if not pairs else "; ".join(pairs)
+    """
+    def fmt_sig_pairs(pmat: pd.DataFrame) -> str:
+        cols = list(pmat.columns)
+        pairs = []
+        for i in range(len(cols)):
+            for j in range(i + 1, len(cols)):
+                pij = float(pmat.iloc[i, j])
+                if pij < alpha:
+                    pairs.append(f"{cols[i]} vs {cols[j]} ({pij:.{p_decimals}f})")
         if not pairs:
             return "None"
         # manual breaks inside cell (works in tabularx X columns)
@@ -514,6 +531,7 @@ def save_stats_summary_latex_table_compact(
         for i in range(0, len(pairs), max_pairs_per_line):
             lines.append("; ".join(pairs[i:i + max_pairs_per_line]))
         return r" \\ ".join(lines)
+    """
 
     rows = []
     for mode, out in stats_by_mode.items():
@@ -535,10 +553,13 @@ def save_stats_summary_latex_table_compact(
     lines += [r"  \renewcommand{\arraystretch}{1.15}"]
     lines += [r"  \scriptsize"]
     # Define a wrapped, ragged-right X column
-    lines += [r"  \newcolumntype{Y}{>{\raggedright\arraybackslash}X}"]
-    lines += [r"  \begin{tabularx}{\linewidth}{lrrYY}"]
+    lines += [r"  \newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}"]
+    lines += [r"  \begin{tabularx}{\linewidth}{@{} l r r L{0.28\linewidth} L{0.30\linewidth} @{}}"]
+    #lines += [r"  \newcolumntype{Y}{>{\raggedright\arraybackslash}X}"]
+    #lines += [r"  \begin{tabularx}{\linewidth}{lrrYY}"]
     lines += [r"    \toprule"]
-    lines += [r"    Mode & $\chi^2$ & $p$ & Avg. ranks (best$\rightarrow$worst) & Nemenyi significant pairs ($p<" + f"{alpha:g}" + r"$) \\"]
+    lines += [r"    Mode & $\chi^2$ & $p$ & Avg. ranks & Significant pairs \\"]
+    #lines += [r"    Mode & $\chi^2$ & $p$ & Avg. ranks (best$\rightarrow$worst) & Nemenyi significant pairs ($p<" + f"{alpha:g}" + r"$) \\"]
     lines += [r"    \midrule"]
 
     for r in df.itertuples(index=False):
@@ -559,9 +580,11 @@ def save_stats_summary_latex_table_compact(
 def main():
     # ---- settings ----
     model_name = "DALSTM"
-    datasets = ["P2P", "HelpDesk", "Sepsis",
-                "BPIC15_1", "BPIC_2017_W",  "BPIC20ID", "BPIC20DD", "BPIC20PTC"]
-    labels_name = ['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA']
+    datasets = ["P2P", "BPIC_2017_W",
+                "BPIC15_1", "BPIC15_2", "BPIC15_3", "BPIC15_4", "BPIC15_5",
+                "HelpDesk", "Sepsis",
+                "BPIC20ID", "BPIC20DD", "BPIC20PTC", "BPIC20TPD", "BPIC20RFP",] 
+    labels_name = ['Vanilla', 'SMOGN', 'CSW', 'EAL', 'BMSE', 'SERA', 'Survival']
     seeds = [409, 1824, 3657, 4012, 4506]    
     # paths
     root_path = os.getcwd()
@@ -570,7 +593,6 @@ def main():
     results_df = aggregate_nmae_over_seeds_and_approaches(
         datasets=datasets, labels_name=labels_name, seeds=seeds,
         result_path=result_path, temp_path=temp_path, model_name=model_name)
-
     print(results_df)
     results_df.to_csv("results_nmae_summary.csv", index=False)
     
@@ -583,35 +605,38 @@ def main():
         label="tab:dalstm_nmae_results",
         )
     
+    approach_order = ['Vanilla', 'CSW', 'EAL', 'BMSE'] #'Survival'    
     save_nmae_boxplot_pdf(results_df, split="all", out_pdf="nmae_all_boxplot.pdf",
-                      approach_order=['Vanilla', 'CSW', 'EAL', 'BMSE'])
+                      approach_order=approach_order)
     save_nmae_boxplot_pdf(results_df, split="many", out_pdf="nmae_many_boxplot.pdf",
-                      approach_order=['Vanilla', 'CSW', 'EAL', 'BMSE'])
+                      approach_order=approach_order)
     save_nmae_boxplot_pdf(results_df, split="medium", out_pdf="nmae_medium_boxplot.pdf",
-                      approach_order=['Vanilla', 'CSW', 'EAL', 'BMSE'])
+                      approach_order=approach_order)
     save_nmae_boxplot_pdf(results_df, split="few", out_pdf="nmae_few_boxplot.pdf",
-                      approach_order=['Vanilla', 'CSW', 'EAL', 'BMSE'])
+                      approach_order=approach_order)
+    
+    stat_approaches = ["Vanilla", "CSW", "EAL", "BMSE", "SERA"]
     
     out_all = friedman_nemenyi_from_results(
-        results_df, approaches=["Vanilla", "CSW", "EAL", "BMSE", "SERA"], mode="all")
+        results_df, approaches=stat_approaches, mode="all")
     print(out_all["friedman"])
     print(out_all["ranks"])
     print(out_all["nemenyi_pvals"])
     
     out_many = friedman_nemenyi_from_results(
-        results_df, approaches=["Vanilla", "CSW", "EAL", "BMSE", "SERA"], mode="many")
+        results_df, approaches=stat_approaches, mode="many")
     print(out_many["friedman"])
     print(out_many["ranks"])
     print(out_many["nemenyi_pvals"])
     
     out_medium = friedman_nemenyi_from_results(
-        results_df, approaches=["Vanilla", "CSW", "EAL", "BMSE", "SERA"], mode="medium")
+        results_df, approaches=stat_approaches, mode="medium")
     print(out_medium["friedman"])
     print(out_medium["ranks"])
     print(out_medium["nemenyi_pvals"])
     
     out_few = friedman_nemenyi_from_results(
-        results_df, approaches=["Vanilla", "CSW", "EAL", "BMSE", "SERA"], mode="few")
+        results_df, approaches=stat_approaches, mode="few")
     print(out_few["friedman"])
     print(out_few["ranks"])
     print(out_few["nemenyi_pvals"])

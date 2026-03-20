@@ -1,7 +1,7 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 def set_loss(args, loss_func=None):
     if loss_func is None: 
@@ -216,6 +216,157 @@ def quantile_loss(
     qw = q_weights.to(base.device, base.dtype).view(1, -1)
     return (base * qw).mean()
 
+def discretize_time_targets(y, bin_edges):
+    """
+    Map continuous targets y to bin indices in [0, num_bins-1].
+    bin_edges shape: [num_bins + 1]
+    """
+    y = y.view(-1)
+    edges = bin_edges.to(y.device)
+    # torch.bucketize returns index in [0, len(edges)]
+    bin_idx = torch.bucketize(y, edges[1:-1], right=False)
+    return bin_idx.long()
+
+ # TODO: remove the following funcitons if everything works!
+def survival_hazard_nll(logits, y, bin_edges, reduction='mean', eps = 1e-6):
+    """
+    logits: [B, K] hazard logits
+    y: [B] continuous remaining time
+    bin_edges: [K+1]
+    """    
+    bin_idx = discretize_time_targets(y, bin_edges)   # [B]
+    hazards = torch.sigmoid(logits).clamp(min=eps, max=1 - eps)   # [B, K]
+    B, K = hazards.shape
+    arange_k = torch.arange(K, device=hazards.device).unsqueeze(0)  # [1, K]
+    j = bin_idx.unsqueeze(1)                                         # [B, 1]
+    survive_mask = (arange_k < j).float()
+    event_mask = (arange_k == j).float()
+    loglik = survive_mask * torch.log(1.0 - hazards) + event_mask * torch.log(hazards)
+    nll = -loglik.sum(dim=1)
+    if reduction == 'mean':
+        return nll.mean()
+    elif reduction == 'sum':
+        return nll.sum()
+    return nll
+
+def hazard_logits_to_event_probs(logits):
+    """
+    Convert hazard logits [B, K] to event probabilities over bins [B, K].
+    """
+    eps = 1e-8
+    hazards = torch.sigmoid(logits).clamp(min=eps, max=1 - eps)  # [B, K]
+    surv_prev = torch.cumprod(
+        torch.cat([torch.ones(hazards.size(0), 1, device=hazards.device),
+                   1.0 - hazards[:, :-1]], dim=1),
+        dim=1
+    )
+    event_probs = surv_prev * hazards
+    return event_probs
+
+def event_probs_to_time(event_probs, bin_edges, pred_type='mean'):
+    """
+    Convert event probability mass over bins to scalar remaining-time prediction.
+    """
+    edges = bin_edges.to(event_probs.device)
+    mids = 0.5 * (edges[:-1] + edges[1:])  # [K]
+    if pred_type == 'mean':
+        return (event_probs * mids.unsqueeze(0)).sum(dim=1)
+    elif pred_type == 'median':
+        cdf = torch.cumsum(event_probs, dim=1)
+        med_bin = (cdf >= 0.5).float().argmax(dim=1)
+        return mids[med_bin]
+    else:
+        raise ValueError(f"Unknown pred_type: {pred_type}")
+
+def hazard_logits_to_survival_summary(logits):
+    eps = 1e-8
+    hazards = torch.sigmoid(logits).clamp(min=eps, max=1 - eps)  # [B, K]
+    surv_prev = torch.cumprod(
+        torch.cat([
+            torch.ones(hazards.size(0), 1, device=hazards.device),
+            1.0 - hazards[:, :-1]
+        ], dim=1),
+        dim=1
+    )  # [B, K]
+    event_probs = surv_prev * hazards                     # P(T in bin k)
+    cdf = torch.cumsum(event_probs, dim=1)               # cumulative bin mass
+    tail_mass = torch.prod(1.0 - hazards, dim=1)         # P(T beyond last bin)
+    return hazards, event_probs, cdf, tail_mass
+
+def survival_distribution_stats(event_probs, bin_edges, tail_mass=None):
+    edges = bin_edges.to(event_probs.device)
+    left = edges[:-1]
+    right = edges[1:]
+    widths = right - left
+    # proxy for the open-ended last bin
+    # simplest practical choice: reuse previous width
+    right_eff = right.clone()
+    if len(widths) > 1:
+        right_eff[-1] = left[-1] + widths[-2]
+    else:
+        right_eff[-1] = right[-1]
+
+    mids = 0.5 * (left + right_eff)  # [K]
+    # truncated mean over represented bins
+    mean = (event_probs * mids.unsqueeze(0)).sum(dim=1)
+    if tail_mass is not None:
+        tail_expectation = left[-1] + 2 * widths[-2]
+        mean = mean + tail_mass * tail_expectation
+    # second moment under uniform-within-bin assumption
+    bin_second_moment = (left**2 + left * right_eff + right_eff**2) / 3.0
+    second_moment = (event_probs * bin_second_moment.unsqueeze(0)).sum(dim=1)
+    var = torch.clamp(second_moment - mean**2, min=0.0)
+    std = torch.sqrt(var)
+    return mean, std, right_eff
+
+def pmf_to_quantile(event_probs, bin_edges, q):
+    edges = bin_edges.to(event_probs.device)
+    left = edges[:-1]
+    right = edges[1:]
+    widths = right - left
+    right_eff = right.clone()
+    if len(widths) > 1:
+        right_eff[-1] = left[-1] + widths[-2]
+    else:
+        right_eff[-1] = right[-1]
+    cdf = torch.cumsum(event_probs, dim=1)
+    mask = cdf >= q
+    idx = mask.float().argmax(dim=1)
+    idx[mask.sum(dim=1) == 0] = event_probs.size(1) - 1
+    cdf_prev = torch.zeros(event_probs.size(0), device=event_probs.device)
+    nonzero = idx > 0
+    cdf_prev[nonzero] = cdf[nonzero, idx[nonzero] - 1]
+    pk = event_probs[torch.arange(event_probs.size(0), device=event_probs.device), idx].clamp_min(1e-12)
+    l = left[idx]
+    r = right_eff[idx]
+    frac = ((q - cdf_prev) / pk).clamp(0.0, 1.0)
+    return l + frac * (r - l)
+
+def compute_tail_blend_score(results_dict, alpha=0.5, tail_q=0.9):
+    y_true = np.asarray(results_dict["GroundTruth"], dtype=np.float64).reshape(-1)
+    y_pred = np.asarray(results_dict["Prediction"], dtype=np.float64).reshape(-1)
+
+    abs_err = np.abs(y_true - y_pred)
+    mae_all = float(abs_err.mean())
+
+    tail_threshold = np.quantile(y_true, tail_q)
+    tail_mask = y_true >= tail_threshold
+
+    if tail_mask.sum() == 0:
+        mae_tail = mae_all
+    else:
+        mae_tail = float(abs_err[tail_mask].mean())
+
+    score = alpha * mae_all + (1.0 - alpha) * mae_tail
+
+    return {
+        "score": score,
+        "mae_all": mae_all,
+        "mae_tail": mae_tail,
+        "tail_threshold": float(tail_threshold),
+        "tail_count": int(tail_mask.sum())
+    }
+        
 # Custom class for Root Mean Squared Error (RMSE)
 class RMSELoss(nn.Module):
     def __init__(self):

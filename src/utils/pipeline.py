@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon Sep 22 09:30:16 2025
-@author: Keyvan Amiri Elyasi
 """
 import os
 from datetime import datetime
+import numpy as np
 import pandas as pd
 import torch
 
@@ -13,12 +13,18 @@ from src.utils.HPO import get_hpo_client, decode_params
 from src.utils.optimizer import get_opt_schedule
 from src.LSTM.load_dataset import load_DALSTM_data, get_train_params
 from src.LSTM.model_DALSTM import get_DALSTM_model
-from src.utils.loss_functions import set_loss
-from src.LSTM.Train_DALSTM import train_epoch, validate_epoch, DALSTM_inference
+from src.utils.loss_functions import set_loss, compute_tail_blend_score
+from src.LSTM.Train_DALSTM import (
+    train_epoch, validate_epoch, train_epoch_survival, validate_epoch_survival,
+    DALSTM_inference, survival_inference_heuristic,
+    survival_collect_dual_predictions, learn_pi80_width_threshold,
+    survival_inference_pi80_hybrid)
+from src.LSTM.Preprocess_DALSTM import compute_survival_bin_edges
 from src.utils.utils import add_shots_quantile
 from src.utils.loss_functions import sera_loss
 from src.utils.fds import add_bin_edges
 from src.utils.set_args import add_result_paths
+
 
 def update_args(args, cfg, parameters):
     args.lr = parameters.get("lr")
@@ -33,6 +39,11 @@ def update_args(args, cfg, parameters):
     args.fds_kernel = parameters.get("fds_kernel")
     args.fds_ks = parameters.get("fds_ks")
     args.fds_sigma = parameters.get("fds_sigma")
+    args.surv_num_bins = parameters.get("surv_num_bins", args.surv_num_bins)
+    args.surv_binning = parameters.get("surv_binning", args.surv_binning)
+    args.surv_pred_type = parameters.get("surv_pred_type", args.surv_pred_type)
+    args.surv_tail_frac = parameters.get("surv_tail_frac", args.surv_tail_frac)
+    args.surv_tail_bin_frac = parameters.get("surv_tail_bin_frac", args.surv_tail_bin_frac)
     args.fds_bucket_num = cfg.get('imbalanced', {}).get('fds_bucket_num', 50)
     args.fds_bucket_start = cfg.get('imbalanced', {}).get('fds_bucket_start', 0)
     args.fds_start_update = cfg.get('imbalanced', {}).get('fds_start_update', 0)
@@ -45,9 +56,11 @@ def update_args(args, cfg, parameters):
     return args   
     
 
-def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):  
+def conduct_HPO(args, cfg, seed=None, logger=None, 
+                gmm_label=None, full_test_for_gmm=True):  
     # set device
     device = f'cuda:{os.environ.get("CUDA_VISIBLE_DEVICES", "0")}' if torch.cuda.is_available() else 'cpu'
+    survival_model = (args.IR == 'survival')
     # define HPO AX client
     ax_client, num_trials = get_hpo_client(args)
     # Optimization loop
@@ -63,10 +76,20 @@ def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):
         if args.model == 'DALSTM':
             if args.IR == 'GMM':
                 (train_loader, val_loader, _, _, _, _, _, meta) = load_DALSTM_data(
-                    args, cfg, gmm_label=gmm_label)
+                    args, cfg, gmm_label=gmm_label, full_test_for_gmm=full_test_for_gmm)
             else:
                 (train_loader, val_loader, _, _, _, _, _, meta) = load_DALSTM_data(
                     args, cfg)
+            surv_bin_edges = None
+            if survival_model:
+                y_train = train_loader.dataset.y
+                surv_bin_edges = compute_survival_bin_edges(
+                    y_train=y_train,
+                    num_bins=args.surv_num_bins,
+                    method=args.surv_binning,
+                    tail_frac=args.surv_tail_frac,
+                    tail_bin_frac=args.surv_tail_bin_frac
+                    ).to(device)    
             (num_epochs, early_stop, early_patience, min_delta
              ) = get_train_params(cfg)
             # define model, and FDS configuration
@@ -75,14 +98,19 @@ def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):
             if args.FDS:
                 model = add_bin_edges(model, train_loader, val_loader, fds_config, device)
         # define loss function
-        criterion = set_loss(args)
-        eval_criterion = set_loss(args, loss_func='mae')
+        if survival_model:
+            criterion = None
+            eval_criterion = None
+        else:
+            criterion = set_loss(args)
+            eval_criterion = set_loss(args, loss_func='mae')
         # Train with these parameters
         raw_data = train_with_hyperparams(
             args, cfg, model, train_loader, val_loader, criterion, eval_criterion,
             num_epochs=num_epochs, early_stop=early_stop,
             early_patience=early_patience, min_delta=min_delta,
-            fds_config=fds_config, device=device, seed=seed, logger=logger)               
+            fds_config=fds_config, surv_bin_edges=surv_bin_edges,
+            device=device, seed=seed, logger=logger, meta=meta)               
         # Complete the trial
         ax_client.complete_trial(trial_index=trial_index, raw_data=raw_data) 
         #debug_trial_params(ax_client)
@@ -99,8 +127,9 @@ def conduct_HPO(args, cfg, seed=None, logger=None, gmm_label=None):
 def train_with_hyperparams(
         args, cfg, model, train_loader, val_loader, criterion, eval_criterion,
         num_epochs=100, early_stop=True, early_patience=30,
-        min_delta=0, fds_config=None, device=None, clip_grad_norm=False,
-        clip_value=None, seed=None, logger=None):    
+        min_delta=0, fds_config=None, surv_bin_edges=None, device=None,
+        clip_grad_norm=False, clip_value=None, seed=None, logger=None,
+        meta=None):    
     heteroscedastic = args.heteroscedastic
     bmse = args.bmse
     fds_model = args.FDS
@@ -108,48 +137,110 @@ def train_with_hyperparams(
         quantile_regression=True
     else:
         quantile_regression=False
+    survival_model = (args.IR == 'survival')
     # define optimizer and scheduler
     optimizer, scheduler = get_opt_schedule(args, cfg, model) 
     # Training loop
     current_patience = 0
     best_valid_loss = float('inf')
+    best_monitor_value = float('inf')
     val_step = cfg[args.model]['val_step']
     for epoch in range(num_epochs):
         if args.model == 'DALSTM':
-            loss = train_epoch(
-                model, train_loader, criterion, optimizer, epoch, bmse=bmse,
-                fds_model=fds_model, heteroscedastic=heteroscedastic,
-                clip_grad_norm=clip_grad_norm, clip_value=clip_value,
-                fds_config=fds_config, quantile_regression=quantile_regression,
-                device=device) 
+            if survival_model:
+                loss = train_epoch_survival(
+                    model=model, train_loader=train_loader, 
+                    optimizer=optimizer, bin_edges=surv_bin_edges, 
+                    device=device,)
+            else:
+                loss = train_epoch(
+                    model, train_loader, criterion, optimizer, epoch, bmse=bmse,
+                    fds_model=fds_model, heteroscedastic=heteroscedastic,
+                    clip_grad_norm=clip_grad_norm, clip_value=clip_value,
+                    fds_config=fds_config, quantile_regression=quantile_regression,
+                    device=device) 
         if (epoch + 1) % val_step == 0:
             if args.model == 'DALSTM':
-                average_valid_loss = validate_epoch(
-                    model, val_loader, eval_criterion, epoch, hpo_mode=True,
-                    bmse=bmse, fds_model=fds_model, heteroscedastic=heteroscedastic,
-                    quantile_regression=quantile_regression, device=device)   
-            print(f'Epoch {epoch + 1}/{num_epochs},', 
-                  f'Loss: {loss.item()}, Validation Loss: {average_valid_loss}')
-            if logger is not None:
-                logger.info(f'Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item()}, Validation Loss: {average_valid_loss}') 
-            if average_valid_loss < best_valid_loss - min_delta:
+                if survival_model:
+                    average_valid_loss = validate_epoch_survival(
+                        model=model, val_loader=val_loader,
+                        bin_edges=surv_bin_edges, device=device)
+                    if args.hpo_metric == 'tail_blend':
+                        val_results = {
+                            'GroundTruth': [], 'Prediction': [],
+                            'Absolute_error': [], 'Prediction_mean': [],
+                            'Prediction_median': [], 'PredStd': [],
+                            'PI80_low': [], 'PI80_high': [], 'PI90_low': [],
+                            'PI90_high': [], 'PI80_width': [], 'PI90_width': [], 
+                            'Tail_mass': []}
+                        val_results = survival_inference_heuristic(
+                            args=args, model=model, inference_loader=val_loader,
+                            all_results=val_results, surv_bin_edges=surv_bin_edges,
+                            test_cases=None, test_lengths=None, val_mode=True,
+                            device=device, meta=meta)
+                        hpo_stats = compute_tail_blend_score(
+                            val_results, alpha=args.hpo_alpha, 
+                            tail_q=args.hpo_tail_q)
+                        monitor_value = hpo_stats["score"]
+                        mae_all = hpo_stats["mae_all"]
+                        mae_tail = hpo_stats["mae_tail"]
+                    else:
+                        monitor_value = average_valid_loss
+                        mae_all = None
+                        mae_tail = None
+                else:
+                    average_valid_loss = validate_epoch(
+                        model, val_loader, eval_criterion, epoch, hpo_mode=True,
+                        bmse=bmse, fds_model=fds_model,
+                        heteroscedastic=heteroscedastic,
+                        quantile_regression=quantile_regression, device=device)
+                    monitor_value = average_valid_loss
+                    mae_all = None
+                    mae_tail = None
+            loss_value = loss.item() if torch.is_tensor(loss) else float(loss)
+            if survival_model and args.hpo_metric == 'tail_blend':
+                print(f'Epoch {epoch + 1}/{num_epochs}, Loss: {loss_value}, '
+                      f'Validation Loss: {average_valid_loss}, '
+                      f'MAE_all: {mae_all}, MAE_tail: {mae_tail}, '
+                      f'HPO Score: {monitor_value}')
+                if logger is not None:
+                    logger.info(
+                        f'Epoch {epoch + 1}/{num_epochs}, Loss: {loss_value}, '
+                        f'Validation Loss: {average_valid_loss}, '
+                        f'MAE_all: {mae_all}, MAE_tail: {mae_tail}, '
+                        f'HPO Score: {monitor_value}')
+            else:
+                print(f'Epoch {epoch + 1}/{num_epochs}, '
+                      f'Loss: {loss_value}, Validation Loss: {average_valid_loss}')
+                if logger is not None:
+                    logger.info(
+                        f'Epoch {epoch + 1}/{num_epochs}, '
+                        f'Loss: {loss_value}, Validation Loss: {average_valid_loss}')
+            if average_valid_loss < best_valid_loss:
                 best_valid_loss = average_valid_loss
+            if monitor_value < best_monitor_value - min_delta:
+                best_monitor_value = monitor_value
                 current_patience = 0
             else:
                 current_patience += val_step
-                # Check for early stopping
-                if (early_stop and current_patience >= early_patience):    
-                    break     
-            # Update learning rate if there is any scheduler
+                if (early_stop and current_patience >= early_patience):
+                    break
             if scheduler is not None:
-                scheduler.step(average_valid_loss)
-    return {"valid_loss": (best_valid_loss, 0.0)}  
+                scheduler.step(average_valid_loss)      
+
+    if survival_model and args.hpo_metric == 'tail_blend':
+        return {"valid_loss": (best_monitor_value, 0.0)}
+    else:
+        return {"valid_loss": (best_valid_loss, 0.0)}
 
 
 def train_evaluate_best_model(
-        args, cfg, best_params, seed=None, logger=None, clip_grad_norm=False,
-        clip_value=None, val_mode=False, gmm_label=None,
-        quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99)):
+        args, cfg, best_params, seed=None, logger=None, 
+        clip_grad_norm=False, clip_value=None, 
+        val_mode=False, gmm_label=None,
+        quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99),
+        full_test_for_gmm=True,
+        return_results_df=False):
     ##########################################################################
     # Train
     ##########################################################################
@@ -168,14 +259,26 @@ def train_evaluate_best_model(
         quantile_regression=True
     else:
         quantile_regression=False
+    survival_model = (args.IR == 'survival')
     # Load data and define training parameters
     if args.model == 'DALSTM':
         if args.IR == 'GMM':
             (train_loader, val_loader, test_loader, test_lengths, test_cases,
-             relevance_val, relevance_test, meta) = load_DALSTM_data(args, cfg, gmm_label=gmm_label)
+             relevance_val, relevance_test, meta) = load_DALSTM_data(
+                 args, cfg, gmm_label=gmm_label, 
+                 full_test_for_gmm=full_test_for_gmm)
         else:
             (train_loader, val_loader, test_loader, test_lengths, test_cases,
              relevance_val, relevance_test, meta) = load_DALSTM_data(args, cfg)
+        surv_bin_edges = None
+        if survival_model:
+            y_train = train_loader.dataset.y
+            surv_bin_edges = compute_survival_bin_edges(
+                y_train=y_train,
+                num_bins=args.surv_num_bins,
+                method=args.surv_binning,
+                tail_frac=args.surv_tail_frac,
+                tail_bin_frac=args.surv_tail_bin_frac).to(device)
         (num_epochs, early_stop, early_patience, min_delta
          ) = get_train_params(cfg)
         # define model, and FDS configuration
@@ -184,7 +287,10 @@ def train_evaluate_best_model(
         if args.FDS:
             model = add_bin_edges(model, train_loader, val_loader, fds_config, device)
     # define loss function
-    criterion = set_loss(args)  
+    if survival_model:
+        criterion = None
+    else:
+        criterion = set_loss(args)  
     # start training
     heteroscedastic = args.heteroscedastic
     bmse = args.bmse
@@ -193,45 +299,97 @@ def train_evaluate_best_model(
     optimizer, scheduler = get_opt_schedule(args, cfg, model) 
     current_patience = 0
     best_valid_loss = float('inf')
+    best_monitor_value = float('inf')
     val_step = 1
     for epoch in range(num_epochs):
         if args.model == 'DALSTM':
-            loss = train_epoch(
-                model, train_loader, criterion, optimizer, epoch, bmse=bmse,
-                fds_model=fds_model, heteroscedastic=heteroscedastic,
-                clip_grad_norm=clip_grad_norm, clip_value=clip_value,
-                fds_config=fds_config, quantile_regression=quantile_regression,
-                device=device)
+            if survival_model:
+                loss = train_epoch_survival(
+                    model=model, train_loader=train_loader, 
+                    optimizer=optimizer, bin_edges=surv_bin_edges,
+                    device=device)
+            else:
+                loss = train_epoch(
+                    model, train_loader, criterion, optimizer, epoch, bmse=bmse,
+                    fds_model=fds_model, heteroscedastic=heteroscedastic,
+                    clip_grad_norm=clip_grad_norm, clip_value=clip_value,
+                    fds_config=fds_config, quantile_regression=quantile_regression,
+                    device=device)
         if (epoch + 1) % val_step == 0:
             if args.model == 'DALSTM':
-                average_valid_loss = validate_epoch(
-                    model, val_loader, criterion, epoch, bmse=bmse,
-                    fds_model=fds_model, heteroscedastic=heteroscedastic,
-                    quantile_regression=quantile_regression, device=device)   
-            print(f'Epoch {epoch + 1}/{num_epochs},', 
-                  f'Loss: {loss.item()}, Validation Loss: {average_valid_loss}')
-            if logger is not None:
-                logger.info(f'Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item()}, Validation Loss: {average_valid_loss}') 
-            if average_valid_loss < best_valid_loss - min_delta:
+                if survival_model:
+                    average_valid_loss = validate_epoch_survival(
+                        model=model, val_loader=val_loader,
+                        bin_edges=surv_bin_edges, device=device)
+                    if args.hpo_metric == 'tail_blend':
+                        val_results = {
+                            'GroundTruth': [], 'Prediction': [],
+                            'Absolute_error': [], 'Prediction_mean': [],
+                            'Prediction_median': [], 'PredStd': [],
+                            'PI80_low': [], 'PI80_high': [],
+                            'PI90_low': [], 'PI90_high': [],
+                            'PI80_width': [], 'PI90_width': [], 'Tail_mass': []}
+                        val_results = survival_inference_heuristic(
+                            args=args, model=model, inference_loader=val_loader,
+                            all_results=val_results, surv_bin_edges=surv_bin_edges,
+                            test_cases=None, test_lengths=None, val_mode=True,
+                            device=device, meta=meta)
+                        hpo_stats = compute_tail_blend_score(
+                            val_results, alpha=args.hpo_alpha,
+                            tail_q=args.hpo_tail_q)
+                        monitor_value = hpo_stats["score"]
+                        mae_all = hpo_stats["mae_all"]
+                        mae_tail = hpo_stats["mae_tail"]
+                    else:
+                        monitor_value = average_valid_loss
+                        mae_all = None
+                        mae_tail = None
+                else:
+                    average_valid_loss = validate_epoch(
+                        model, val_loader, criterion, epoch, bmse=bmse,
+                        fds_model=fds_model, heteroscedastic=heteroscedastic,
+                        quantile_regression=quantile_regression, device=device)
+                    monitor_value = average_valid_loss
+                    mae_all = None
+                    mae_tail = None
+            loss_value = loss.item() if torch.is_tensor(loss) else float(loss)
+            if survival_model and args.hpo_metric == 'tail_blend':
+                print(f'Epoch {epoch + 1}/{num_epochs}, Loss: {loss_value}, '
+                      f'Validation Loss: {average_valid_loss}, '
+                      f'MAE_all: {mae_all}, MAE_tail: {mae_tail}, '
+                      f'HPO Score: {monitor_value}')
+                if logger is not None:
+                    logger.info(
+                        f'Epoch {epoch + 1}/{num_epochs}, Loss: {loss_value}, '
+                        f'Validation Loss: {average_valid_loss}, '
+                        f'MAE_all: {mae_all}, MAE_tail: {mae_tail}, '
+                        f'HPO Score: {monitor_value}')
+            else:
+                print(f'Epoch {epoch + 1}/{num_epochs}, '
+                      f'Loss: {loss_value}, Validation Loss: {average_valid_loss}')
+                if logger is not None:
+                    logger.info(
+                        f'Epoch {epoch + 1}/{num_epochs}, '
+                        f'Loss: {loss_value}, Validation Loss: {average_valid_loss}')
+            if average_valid_loss < best_valid_loss:
                 best_valid_loss = average_valid_loss
+            if monitor_value < best_monitor_value - min_delta:
+                best_monitor_value = monitor_value
                 current_patience = 0
-                # save the best model      
                 checkpoint = {
                     'epoch': epoch + 1,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': loss.item(),
-                    'best_valid_loss': best_valid_loss            
-                    }
+                    'loss': loss_value,
+                    'best_valid_loss': best_valid_loss,
+                    'best_monitor_value': best_monitor_value}
                 torch.save(checkpoint, checkpoint_path)
             else:
                 current_patience += val_step
-                # Check for early stopping
-                if (early_stop and current_patience >= early_patience):    
-                    break  
-            # Update learning rate if there is any scheduler
-            if scheduler is not None:
-                scheduler.step(average_valid_loss)
+                if (early_stop and current_patience >= early_patience):
+                    break
+        if scheduler is not None:
+            scheduler.step(average_valid_loss)
     training_time = (datetime.now()-start).total_seconds()
     if logger is not None:
         logger.info(f'Training time- in seconds: {training_time}')
@@ -240,12 +398,22 @@ def train_evaluate_best_model(
     ##########################################################################
     start=datetime.now() # get start time (to compute inference time)
     if heteroscedastic:
-        all_results = {'GroundTruth': [], 'Prediction': [],
-                       'Epistemic_Uncertainty': [], 'Aleatoric_Uncertainty': [],
-                       'Total_Uncertainty': [], 'Absolute_error': []} 
+        all_results = {
+        'GroundTruth': [], 'Prediction': [],
+        'Epistemic_Uncertainty': [], 'Aleatoric_Uncertainty': [],
+        'Total_Uncertainty': [], 'Absolute_error': []
+        }
+    elif survival_model:
+        all_results = {
+        'GroundTruth': [], 'Prediction': [], 'Absolute_error': [],
+        'Prediction_mean': [], 'Prediction_median': [], 'PredStd': [],
+        'PI80_low': [], 'PI80_high': [], 'PI90_low': [], 'PI90_high': [],
+        'PI80_width': [], 'PI90_width': [], 'Tail_mass': [], 
+        'Used_New_Inference': [],}
     else:
-        all_results = {'GroundTruth': [], 'Prediction': [], 
-                       'Absolute_error': []}  
+        all_results = {
+        'GroundTruth': [], 'Prediction': [], 'Absolute_error': []
+        }
     # If quantile regression, optionally pre-create columns (not required,
     # because DALSTM_inference adds them if missing — but it's fine either way)
     if quantile_regression:
@@ -267,11 +435,35 @@ def train_evaluate_best_model(
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    all_results = DALSTM_inference(
-        args, model, checkpoint, inference_loader, all_results, test_lengths,
-        test_cases, meta, bmse=bmse, fds_model=fds_model,
-        heteroscedastic=heteroscedastic, val_mode=val_mode, quantiles=quantiles,
-        device=device)
+    if survival_model:
+        if args.surv_learn_pi80_hybrid_final:
+            # 1) learn threshold on validation set
+            val_dual_results = survival_collect_dual_predictions(
+                args=args, model=model, inference_loader=val_loader,
+                surv_bin_edges=surv_bin_edges, device=device, meta=meta)
+            learned_thr = learn_pi80_width_threshold(
+                val_dual_results, grid_size=args.surv_width_grid_size)
+            if logger is not None:
+                logger.info(f"Learned PI80 width threshold: {learned_thr}")
+            print(f"Learned PI80 width threshold: {learned_thr}")
+            # 2) apply hybrid routing only at final inference
+            all_results = survival_inference_pi80_hybrid(
+                args=args, model=model, inference_loader=inference_loader,
+                all_results=all_results, surv_bin_edges=surv_bin_edges,
+                pi80_width_threshold=learned_thr,
+                test_cases=test_cases, test_lengths=test_lengths,
+                val_mode=val_mode, device=device, meta=meta)
+        else:
+            all_results = survival_inference_heuristic(
+                args, model, inference_loader, all_results, surv_bin_edges,
+                test_cases, test_lengths, val_mode=val_mode, device=device,
+                meta=meta)
+    else:
+        all_results = DALSTM_inference(
+            args, model, checkpoint, inference_loader, all_results,
+            test_lengths, test_cases, meta, bmse=bmse, fds_model=fds_model,
+            heteroscedastic=heteroscedastic, val_mode=val_mode,
+            quantiles=quantiles, device=device)
     inference_time = (datetime.now()-start).total_seconds()
     if not val_mode:
         # inference time is reported in milliseconds.
@@ -289,7 +481,7 @@ def train_evaluate_best_model(
     if not val_mode:
         cols = ['Case_id', 'Prefix_length'] + [c for c in results_df.columns if c not in ['Case_id', 'Prefix_length']]
         results_df = results_df[cols]
-    res_path = add_result_paths(args, val_mode, gmm_label, seed)        
+    res_path = add_result_paths(args, val_mode, seed)        
     results_df.to_csv(res_path, index=False)
     MAE = results_df["Absolute_error"].mean()
     # get MAE on many, med, and few shots
@@ -310,4 +502,136 @@ def train_evaluate_best_model(
     new_device = "cpu"
     preds, trues, phi = preds.to(new_device), trues.to(new_device), phi.to(new_device)
     SERA = sera_loss(preds, trues, phi)
+    if return_results_df:
+        return results_df, relevance_test
     return (MAE, MAE_many, MAE_med, MAE_few, SERA)
+
+
+def train_evaluate_soft_gmm(
+        args, cfg, best_param_list, distinct_labels,
+        seed=None, logger=None,
+        quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99)):
+    """
+    Train/evaluate one expert per GMM component, predict on the FULL test set,
+    then combine expert predictions using router probabilities p_test.
+
+    Returns:
+        MAE, MAE_many, MAE_med, MAE_few, SERA, results_df
+    """
+    # ---------------------------------------------------------------------
+    # Load router probabilities for test set
+    # Shape expected: [N_test, K]
+    # ---------------------------------------------------------------------
+    p_test = torch.load(args.p_test_path, weights_only=True).float()
+
+    pred_cols = []
+    base_df = None
+    relevance_test = None
+
+    # ---------------------------------------------------------------------
+    # Run each expert on the full test set
+    # ---------------------------------------------------------------------
+    for best_params, gmm_label in zip(best_param_list, distinct_labels):
+        results_df, rel_test = train_evaluate_best_model(
+            args=args,
+            cfg=cfg,
+            best_params=best_params,
+            seed=seed,
+            logger=logger,
+            gmm_label=gmm_label,
+            full_test_for_gmm=True,
+            return_results_df=True,
+            quantiles=quantiles
+        )
+
+        if base_df is None:
+            base_df = results_df.copy()
+            relevance_test = rel_test
+        else:
+            # Strong safety check: all experts must predict in the same test order
+            same_gt = np.array_equal(
+                base_df["GroundTruth"].values,
+                results_df["GroundTruth"].values
+            )
+            same_case = np.array_equal(
+                base_df["Case_id"].values,
+                results_df["Case_id"].values
+            )
+            same_prefix = np.array_equal(
+                base_df["Prefix_length"].values,
+                results_df["Prefix_length"].values
+            )
+            if not (same_gt and same_case and same_prefix):
+                raise ValueError(
+                    f"Expert {gmm_label} predictions are not aligned with the base test order."
+                )
+
+        pred_cols.append(
+            torch.tensor(results_df["Prediction"].values, dtype=torch.float32)
+        )
+
+    pred_matrix = torch.stack(pred_cols, dim=1)   # [N_test, K]
+
+    # ---------------------------------------------------------------------
+    # Safety checks on probability matrix
+    # ---------------------------------------------------------------------
+    if p_test.ndim != 2:
+        raise ValueError(f"p_test must be 2D, got shape {tuple(p_test.shape)}")
+
+    if p_test.shape != pred_matrix.shape:
+        raise ValueError(
+            f"Shape mismatch: p_test={tuple(p_test.shape)}, "
+            f"pred_matrix={tuple(pred_matrix.shape)}"
+        )
+
+    # Renormalize in case of tiny numerical drift
+    row_sums = p_test.sum(dim=1, keepdim=True).clamp_min(1e-12)
+    p_test = p_test / row_sums
+
+    # ---------------------------------------------------------------------
+    # Soft mixture of experts: y_hat = sum_k p(k|x) * y_hat_k(x)
+    # ---------------------------------------------------------------------
+    y_pred_soft = (p_test * pred_matrix).sum(dim=1).cpu().numpy()
+
+    # ---------------------------------------------------------------------
+    # Build final result dataframe
+    # ---------------------------------------------------------------------
+    results_df = base_df.copy()
+    results_df["Prediction"] = y_pred_soft
+    results_df["Absolute_error"] = np.abs(
+        results_df["GroundTruth"].values - results_df["Prediction"].values
+    )
+
+    # Save final soft-routed predictions
+    soft_name = f"{args.model_name}soft_gmm_seed{seed}.csv"
+    soft_path = os.path.join(args.result_path, soft_name)
+    results_df.to_csv(soft_path, index=False)
+
+    if logger is not None:
+        logger.info(f"Saved soft-GMM predictions to {soft_path}")
+
+    # ---------------------------------------------------------------------
+    # Metrics
+    # ---------------------------------------------------------------------
+    MAE = results_df["Absolute_error"].mean()
+
+    df = add_shots_quantile(results_df)
+    df_many = df[df["many"] == 1]
+    df_med  = df[df["med"] == 1]
+    df_few  = df[df["few"] == 1]
+
+    MAE_many = df_many["Absolute_error"].mean()
+    MAE_med  = df_med["Absolute_error"].mean()
+    MAE_few  = df_few["Absolute_error"].mean()
+
+    preds = torch.tensor(df["Prediction"].values, dtype=torch.float32)
+    trues = torch.tensor(df["GroundTruth"].values, dtype=torch.float32)
+    phi   = torch.tensor(relevance_test, dtype=torch.float32)
+
+    preds = preds.to("cpu")
+    trues = trues.to("cpu")
+    phi   = phi.to("cpu")
+
+    SERA = sera_loss(preds, trues, phi)
+
+    return (MAE, MAE_many, MAE_med, MAE_few, SERA, results_df)

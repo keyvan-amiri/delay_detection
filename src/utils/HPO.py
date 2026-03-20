@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Fri Sep 19 14:48:03 2025
-@author: Keyvan Amiri Elyasi
 """
 import numpy as np
 from ax.service.ax_client import AxClient
@@ -9,8 +8,12 @@ from ax.service.utils.instantiation import ObjectiveProperties
 
 def get_hpo_params(args):
     # Define learning rate
-    lr_sp = {"name": "lr", "type": "range", "bounds": [1e-5, 1e-2],
-             "value_type": "float", "log_scale": True}
+    if args.IR == 'survival':
+        lr_sp = {"name": "lr", "type": "range", "bounds": [1e-5, 3e-4],
+                 "value_type": "float", "log_scale": True}
+    else:        
+        lr_sp = {"name": "lr", "type": "range", "bounds": [1e-5, 1e-2],
+                 "value_type": "float", "log_scale": True}
     # Define loss function
     loss_sp = get_loss_param(args)
     # Define weighting parameters
@@ -23,15 +26,19 @@ def get_hpo_params(args):
     lds_ks_sp, lds_sigma_sp, lds_kernel_sp = get_lds_params(args)
     # Define parameters for Feature Distribution Smoothing 
     fds_ks_sp, fds_sigma_sp, fds_kernel_sp = get_fds_params(args)
+    (surv_num_bins_sp, surv_binning_sp, surv_tail_frac_sp, 
+     surv_tail_bin_frac_sp, surv_pred_type_sp) = get_survival_params(args)
     # collect all parameters and define number of trials
     params = [lr_sp, loss_sp, weight_sp, bins_sp, beta_sp, gamma_sp,
               ext_sp, asym_sp,
               lds_ks_sp, lds_sigma_sp, lds_kernel_sp,
-              fds_ks_sp, fds_sigma_sp, fds_kernel_sp]
+              fds_ks_sp, fds_sigma_sp, fds_kernel_sp,
+              surv_num_bins_sp, surv_binning_sp, surv_pred_type_sp,
+              surv_tail_frac_sp, surv_tail_bin_frac_sp, ]
     if args.IR in {'Vanilla', 'GMM'}:
         num_trials = 10
     elif args.IR in {'quantile'}:
-        num_trials = 15
+        num_trials = 15   
     else:
         num_trials = 45
     return params, num_trials
@@ -57,11 +64,9 @@ def get_hpo_client(args):
 def get_loss_param(args):
     """
     loss function map:
-        {"mae": 0, "mse": 1, "huber": 2
-         "focal_mae": 3, "focal_mse": 4,
-         "bmse": 5, "sera": 6, "quantile": 7}
+        {"mae": 0, "mse": 1, "huber": 2, "focal_mae": 3, "focal_mse": 4,
+     "bmse": 5, "sera": 6, "quantile": 7, "survival": 8}
     """
-    # LOSSFUNC = 
     if args.IR in {'Vanilla', 'GMM'}:
         loss_sp = {"name":"loss_func_id", 
                    "type":"fixed",
@@ -92,6 +97,11 @@ def get_loss_param(args):
                    "type":"fixed",
                    "value":7,
                    "value_type":"int"}
+    elif args.IR == 'survival':
+        loss_sp = {"name": "loss_func_id",
+                   "type": "fixed",
+                   "value": 8,
+                   "value_type": "int"}
     return loss_sp
 
 def get_weighting_params(args):
@@ -196,6 +206,72 @@ def get_fds_params(args):
                      "value_type":"int"}
     return fds_ks_sp, fds_sigma_sp, fds_kernel_sp
 
+def get_survival_params(args):
+    if args.IR == 'survival':
+        surv_num_bins_sp = {
+            "name": "surv_num_bins",
+            "type": "choice",
+            "values": [10, 15, 20],
+            "value_type": "int",
+            "is_ordered": True
+            }
+        surv_binning_sp = {
+            "name":"surv_binning_id",
+            "type":"choice",
+            "values":[0,1],
+            "value_type":"int"}
+        surv_pred_type_sp = {
+            "name": "surv_pred_type_id",
+            "type": "choice",
+            "values":[0,1],
+            "value_type":"int"}       
+        surv_tail_frac_sp = {
+            "name": "surv_tail_frac",
+            "type": "choice",
+            "values": [0.1, 0.2, 0.3],
+            "value_type": "float",
+            "is_ordered": True
+            }
+        surv_tail_bin_frac_sp = {
+            "name": "surv_tail_bin_frac",
+            "type": "choice",
+            "values": [0.3, 0.4, 0.5],
+            "value_type": "float",
+            "is_ordered": True
+            }
+    else:
+        surv_num_bins_sp = {
+            "name": "surv_num_bins",
+            "type": "fixed",
+            "value": args.surv_num_bins,
+            "value_type": "int"
+            }
+        surv_binning_sp = {
+            "name": "surv_binning_id",
+            "type": "fixed",
+            "value": 0,
+            "value_type": "int"
+            }
+        surv_pred_type_sp = {
+            "name": "surv_pred_type_id",
+            "type": "fixed",
+            "value": 0,
+            "value_type":"int"}   
+        surv_tail_frac_sp = {
+            "name": "surv_tail_frac",
+            "type": "fixed",
+            "value": args.surv_tail_frac,
+            "value_type": "float"
+            }
+        surv_tail_bin_frac_sp = {
+            "name": "surv_tail_bin_frac",
+            "type": "fixed",
+            "value": args.surv_tail_bin_frac,
+            "value_type": "float"
+            }
+    return (surv_num_bins_sp, surv_binning_sp, surv_tail_frac_sp, 
+            surv_tail_bin_frac_sp, surv_pred_type_sp)    
+        
 def get_sera_params(args):
     # extreme/asym only searched for SERA, fixed otherwise
     # EXTREME  = {"high": 0, "both": 1}
@@ -225,12 +301,16 @@ def decode_params(parameters: dict) -> dict:
     ID2REWEIGHT = {0:"none", 1:"inverse", 2:"sqrt_inv"}
     ID2LOSSFUNC = {0:"mae", 1:"mse", 2:"huber",
                    3:"focal_mae", 4:"focal_mse",
-                   5:"bmse", 6:"sera", 7:"quantile"}
+                   5:"bmse", 6:"sera", 7:"quantile", 8: "survival"}
     ID2EXTREME  = {0:"high", 1:"both"}
+    ID2BINNING = {0:"quantile", 1:"hybrid_tail"}
+    ID2SURTYPE = {0:"mean", 1:"median"}   
     ID2KERNEL   = {0:"gaussian"}
     if "reweight_id" in p:     p["reweight"] = ID2REWEIGHT[p.pop("reweight_id")]
     if "loss_func_id" in p:    p["loss_func"] = ID2LOSSFUNC[p.pop("loss_func_id")]
     if "extreme_type_id" in p: p["extreme_type"] = ID2EXTREME[p.pop("extreme_type_id")]
+    if "surv_binning_id" in p: p["surv_binning"] = ID2BINNING[p.pop("surv_binning_id")]
+    if "surv_pred_type_id" in p: p["surv_pred_type"] = ID2SURTYPE[p.pop("surv_pred_type_id")]
     if "lds_kernel_id" in p:   p["lds_kernel"] = ID2KERNEL[p.pop("lds_kernel_id")]
     if "fds_kernel_id" in p:   p["fds_kernel"] = ID2KERNEL[p.pop("fds_kernel_id")]
     if "asym_id" in p:

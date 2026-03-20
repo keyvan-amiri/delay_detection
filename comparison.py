@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Sep 23 07:52:18 2025
-@author: Keyvan Amiri Elyasi
 """
 import os
 import pickle

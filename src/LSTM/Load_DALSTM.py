@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Wed Sep 10 10:39:15 2025
-@author: Keyvan Amiri Elyasi
 """
 import os
 import numpy as np

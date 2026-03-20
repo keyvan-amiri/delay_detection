@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Wed Feb 25 12:41:32 2026
-@author: kamirel
 """
 import os
 import pickle
@@ -420,7 +419,22 @@ def plot_early_detection_pr_auc(
     
 def main():
     model_name = "DALSTM"
-    datasets = ["P2P", "BPIC15_1", "BPIC_2017_W", "Sepsis", "BPIC20ID", "BPIC20DD", "BPIC20PTC"]
+    datasets = [
+        "P2P",
+        "BPIC_2017_W",
+        "BPIC15_1",
+        "BPIC15_2",
+        "BPIC15_3",
+        "BPIC15_4",
+        "BPIC15_5",
+        "HelpDesk",
+        "Sepsis",
+        "BPIC20ID",
+        "BPIC20DD",
+        "BPIC20PTC",
+        "BPIC20TPD",
+        "BPIC20RFP",
+    ] 
     seeds = [409, 1824, 3657, 4012, 4506]
     quantiles = [0.8, 0.9, 0.95]
     levels = [0.25, 0.5, 0.75]

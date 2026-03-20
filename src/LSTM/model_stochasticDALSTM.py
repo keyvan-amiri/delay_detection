@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Feb  3 10:00:59 2026
-@author: Keyvan Amiri Elyasi
 """
 import torch
 import torch.nn as nn
