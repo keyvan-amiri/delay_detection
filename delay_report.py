@@ -26,6 +26,11 @@ APPROACH_NAME_MAP = {
     "base": "Classification",
     "cat": "Survival",
 }
+EARLINESS_THRESHOLDS = [0.2, 0.4, 0.6, 0.8]
+PLOT_METRICS = ["recall", "precision", "f1", "prauc"]
+PREFIX_RATIO_COL = "prefix_ratio"
+CASE_LENGTH_COL = "case_length"
+
 # =========================
 # Validation
 # =========================
@@ -1001,6 +1006,236 @@ def run_wilcoxon_tests(
 
     return pd.DataFrame(results)
 
+def add_case_length_and_prefix_ratio(
+    df: pd.DataFrame,
+    case_id_col: str = CASE_ID_COL,
+    prefix_col: str = PREFIX_COL,
+) -> pd.DataFrame:
+    """
+    Derive case length as the maximum Prefix_length within each Case_id,
+    then compute prefix_ratio = Prefix_length / case_length.
+    """
+    out = df.copy()
+
+    out[prefix_col] = out[prefix_col].astype(float)
+
+    case_lengths = out.groupby(case_id_col)[prefix_col].transform("max")
+    out[CASE_LENGTH_COL] = case_lengths
+
+    if (out[CASE_LENGTH_COL] <= 0).any():
+        raise ValueError(
+            f"Derived '{CASE_LENGTH_COL}' contains non-positive values."
+        )
+
+    out[PREFIX_RATIO_COL] = out[prefix_col] / out[CASE_LENGTH_COL]
+    return out
+
+def evaluate_earliness_single_dataframe(
+    df: pd.DataFrame,
+    dataset_name: str,
+    approach_name: str,
+    seed: int = None,
+    thresholds: list = None,
+    metric_functions: dict = None,
+) -> list:
+    """
+    Evaluate metrics on cumulative subsets:
+    Prefix_length / case_length <= threshold
+    """
+    validate_input_dataframe(df)
+
+    if thresholds is None:
+        thresholds = EARLINESS_THRESHOLDS
+
+    if metric_functions is None:
+        metric_functions = {
+            "recall": metric_recall,
+            "precision": metric_precision,
+            "f1": metric_f1,
+            "prauc": metric_prauc,
+        }
+
+    df = add_case_length_and_prefix_ratio(df)
+
+    rows = []
+    for threshold in thresholds:
+        subset = df[df[PREFIX_RATIO_COL] <= threshold].copy()
+
+        row = {
+            "dataset": dataset_name,
+            "approach": approach_name,
+            "seed": seed,
+            "prefix_ratio_threshold": threshold,
+            "n_rows": len(subset),
+            "n_cases": subset[CASE_ID_COL].nunique() if len(subset) > 0 else 0,
+        }
+
+        if len(subset) == 0:
+            for metric_name in metric_functions:
+                row[metric_name] = np.nan
+        else:
+            for metric_name, metric_fn in metric_functions.items():
+                row[metric_name] = metric_fn(subset)
+
+        rows.append(row)
+
+    return rows
+
+def evaluate_earliness_dataframe_list(
+    df_list: list,
+    dataset_name: str,
+    approach_name: str,
+    seeds: list = None,
+    thresholds: list = None,
+    metric_functions: dict = None,
+) -> list:
+    """
+    Evaluate earliness metrics for a list of dataframes.
+    """
+    results = []
+
+    if seeds is None:
+        seeds = [None] * len(df_list)
+
+    if len(df_list) != len(seeds):
+        raise ValueError(
+            f"Length mismatch: len(df_list)={len(df_list)} != len(seeds)={len(seeds)}"
+        )
+
+    for df, seed in zip(df_list, seeds):
+        rows = evaluate_earliness_single_dataframe(
+            df=df,
+            dataset_name=dataset_name,
+            approach_name=approach_name,
+            seed=seed,
+            thresholds=thresholds,
+            metric_functions=metric_functions,
+        )
+        results.extend(rows)
+
+    return results
+
+def metric_display_name(metric: str) -> str:
+    mapping = {
+        "recall": "Recall",
+        "precision": "Precision",
+        "f1": "F1-Score",
+        "prauc": "PRAUC",
+    }
+    return mapping.get(metric, metric)
+
+
+def plot_earliness_curves_for_dataset(
+    summary_df: pd.DataFrame,
+    dataset_name: str,
+    output_dir: str,
+    metrics: list = None,
+    q_suffix: str = "",
+):
+    """
+    Create 4 PDF plots for one dataset: recall, precision, f1, prauc.
+    """
+    if metrics is None:
+        metrics = PLOT_METRICS
+
+    dataset_df = summary_df[summary_df["dataset"] == dataset_name].copy()
+    if dataset_df.empty:
+        return
+
+    for metric in metrics:
+        metric_col = f"{metric}_mean"
+        if metric_col not in dataset_df.columns:
+            continue
+
+        plt.figure(figsize=(6, 4))
+
+        for approach in ["Classification", "Survival"]:
+            approach_df = dataset_df[
+                dataset_df["approach"] == approach
+            ].sort_values("prefix_ratio_threshold")
+
+            plt.plot(
+                approach_df["prefix_ratio_threshold"],
+                approach_df[metric_col],
+                marker="o",
+                label=approach,
+            )
+
+        plt.xlabel("Prefix length / case length")
+        plt.ylabel(metric_display_name(metric))
+        plt.title(f"{dataset_name} - {metric_display_name(metric)}")
+        plt.xticks(EARLINESS_THRESHOLDS, [str(x) for x in EARLINESS_THRESHOLDS])
+        plt.ylim(0, 1)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+
+        output_path = os.path.join(
+            output_dir,
+            f"{dataset_name}{q_suffix}_{metric}_earliness.pdf"
+        )
+        plt.savefig(output_path, format="pdf", bbox_inches="tight")
+        plt.close()
+
+
+def plot_earliness_curves_aggregated(
+    summary_df: pd.DataFrame,
+    output_dir: str,
+    metrics: list = None,
+    q_suffix: str = "",
+):
+    """
+    Create 4 PDF plots averaged over datasets.
+    """
+    if metrics is None:
+        metrics = PLOT_METRICS
+
+    agg_df = (
+        summary_df.groupby(["approach", "prefix_ratio_threshold"], as_index=False)
+        .agg({
+            "recall_mean": "mean",
+            "precision_mean": "mean",
+            "f1_mean": "mean",
+            "prauc_mean": "mean",
+        })
+    )
+
+    for metric in metrics:
+        metric_col = f"{metric}_mean"
+        if metric_col not in agg_df.columns:
+            continue
+
+        plt.figure(figsize=(6, 4))
+
+        for approach in ["Classification", "Survival"]:
+            approach_df = agg_df[
+                agg_df["approach"] == approach
+            ].sort_values("prefix_ratio_threshold")
+
+            plt.plot(
+                approach_df["prefix_ratio_threshold"],
+                approach_df[metric_col],
+                marker="o",
+                label=approach,
+            )
+
+        plt.xlabel("Prefix length / case length")
+        plt.ylabel(metric_display_name(metric))
+        plt.title(f"Average across datasets - {metric_display_name(metric)}")
+        plt.xticks(EARLINESS_THRESHOLDS, [str(x) for x in EARLINESS_THRESHOLDS])
+        plt.ylim(0, 1)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+
+        output_path = os.path.join(
+            output_dir,
+            f"all_datasets{q_suffix}_{metric}_earliness.pdf"
+        )
+        plt.savefig(output_path, format="pdf", bbox_inches="tight")
+        plt.close()
+        
+        
 # =========================
 # Main pipeline
 # =========================
@@ -1027,7 +1262,7 @@ def main():
     parser.add_argument(
         '--quantile',
         type=float,
-        default=0.9,
+        default=0.8,
         help='Quantile threshold for defining delays'
         )
     args = parser.parse_args()
@@ -1035,6 +1270,13 @@ def main():
     root_path = os.getcwd()
     all_results = []
     metric_functions = get_metric_functions()
+    earliness_results = []
+    earliness_metric_functions = {
+        "recall": metric_recall,
+        "precision": metric_precision,
+        "f1": metric_f1,
+        "prauc": metric_prauc,
+        }
 
     for dataset in datasets:
         result_dir = os.path.join(root_path, "results", model_name, dataset)
@@ -1055,6 +1297,15 @@ def main():
                 metric_functions=metric_functions,
             )
             all_results.extend(results)
+            earliness_rows = evaluate_earliness_dataframe_list(
+                df_list=df_list,
+                dataset_name=dataset,
+                approach_name=approach_name,
+                seeds=found_seeds,
+                thresholds=EARLINESS_THRESHOLDS,
+                metric_functions=earliness_metric_functions,
+                )
+            earliness_results.extend(earliness_rows)
     # Seed-level results
     results_df = pd.DataFrame(all_results)
     # Aggregate across seeds
@@ -1072,6 +1323,12 @@ def main():
     summary_path = os.path.join(output_dir, f"{model_name}_summary_results.csv")
     summary_df.to_csv(summary_path, index=False)
     print(f"Saved summary results to: {summary_path}")
+    earliness_results_df = pd.DataFrame(earliness_results)
+    earliness_summary_df = aggregate_results_across_seeds(
+        results_df=earliness_results_df,
+        group_cols=["dataset", "approach", "prefix_ratio_threshold"],
+        metric_cols=["recall", "precision", "f1", "prauc"],
+    )
     dataset_order = [
     "P2P",
     "BPIC_2017_W",
@@ -1091,6 +1348,12 @@ def main():
     
     q_suffix = "" if args.quantile == 0.9 else f"_{format_quantile_for_name(args.quantile)}"
     summary_path = os.path.join(output_dir, f"{model_name}{q_suffix}_summary_results.csv")
+    earliness_summary_path = os.path.join(
+        output_dir,
+        f"{model_name}{q_suffix}_earliness_summary.csv"
+        )
+    earliness_summary_df.to_csv(earliness_summary_path, index=False)
+    (f"Saved earliness summary results to: {earliness_summary_path}")
     latex_output_path = os.path.join(output_dir, f"{model_name}{q_suffix}_confusion_table.tex")
 
     confusion_wide_df, latex_table = export_confusion_table_to_latex(
@@ -1144,6 +1407,22 @@ def main():
     print("\nWilcoxon signed-rank test results:")
     print(wilcoxon_df)
     print(f"Saved Wilcoxon results to: {wilcoxon_output_path}")
+    
+    for dataset in datasets:
+        plot_earliness_curves_for_dataset(
+            summary_df=earliness_summary_df,
+            dataset_name=dataset,
+            output_dir=output_dir,
+            metrics=PLOT_METRICS,
+            q_suffix=q_suffix,
+        )
+    plot_earliness_curves_aggregated(
+        summary_df=earliness_summary_df,
+        output_dir=output_dir,
+        metrics=PLOT_METRICS,
+        q_suffix=q_suffix,
+    )
+    print(f"Saved earliness plots to: {output_dir}")
 
 if __name__ == '__main__':
     main()
