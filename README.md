@@ -31,7 +31,8 @@ The pipeline includes the same two configurations (wos and FDS) for Squared Erro
 
 To tain the uncertainty-aware approach based on survival analysis, --IR argument must be set to 'survival'. It is also possible to train a uncertainty-aware model based on quantile regression using 'quantile' for --IR argument.
 
-* All congifurations that are used for hyper-parameter optimization and training are collected [here](https://github.com/keyvan-amiri/delay_detection/tree/main/cfg). 
+* All event logs are collected [here](https://github.com/keyvan-amiri/delay_detection/tree/main/data).
+* All congifurations that are used for hyper-parameter optimization and training are collected [here](https://github.com/keyvan-amiri/delay_detection/tree/main/cfg). You need to adjust cdg.data.path in the cfg file in order to determine the path to the XES or CSV file.
 
 Once the survival model is trained, the second step for uncertainty-aware classification (and training the point-estimate deterministic baseline) for a dataset (e.g., BPIC20PTC) can be achived by running the followin:
 
