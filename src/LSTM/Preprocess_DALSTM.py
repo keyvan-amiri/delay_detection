@@ -14,14 +14,14 @@ from src.LSTM.Load_DALSTM import dalstm_load_dataset
 from src.LSTM.Load_DALSTM import pad_arrays, normalize_tensors
 from src.LSTM.Load_DALSTM import remove_small_values, check_processed_tensors
 from src.LSTM.load_dataset import get_train_params
-from src.utils.case_durations import expand_case_ids
+from src.utils.utils import expand_case_ids
 from src.LSTM.dataset_class import DALSTM_dataset
 from src.LSTM.model_DALSTM import DALSTMModel
 from src.utils.loss_functions import weighted_l1_loss
 from src.LSTM.Train_DALSTM import train_epoch, validate_epoch
 from src.utils.GMM import train_lstm_and_predict_test_components
 from src.utils.GMM import fit_joint_behavior_time_gmm, extract_prefix_embeddings
-#from src.utils.GMM import fit_label_gmm
+
 
 def compute_quantile_bin_edges(y_train: torch.Tensor, num_bins: int):
     """
@@ -180,8 +180,6 @@ class DALSTM_preprocessing ():
         pd_log = self.log
         # Use integers always for case identifiers.
         # We need this to make a split that is equal for every dataset
-        #pd_log[self.log_ids.case] = pd.Categorical(pd_log[self.log_ids.case])
-        #pd_log[self.log_ids.case] = pd_log[self.log_ids.case].cat.codes 
         if self.log_ids.transition in pd_log.columns:
             if (self.perform_lifecycle_trick and 
                 pd_log[self.log_ids.transition].nunique() > 1):
@@ -201,7 +199,8 @@ class DALSTM_preprocessing ():
             attributes.append(self.log_ids.transition)
         sel_cols = [self.log_ids.case, self.log_ids.activity, self.log_ids.end_time] + attributes
         pd_log = pd_log[sel_cols]
-        pd_log[self.log_ids.end_time] = pd.to_datetime(pd_log[self.log_ids.end_time], utc=True)
+        pd_log[self.log_ids.end_time] = pd.to_datetime(
+            pd_log[self.log_ids.end_time], utc=True)
         pd_log[self.log_ids.end_time] = pd_log[self.log_ids.end_time].dt.strftime(time_format)
         ordered_columns=[self.log_ids.case, self.log_ids.activity, self.log_ids.end_time]
         pd_log = pd_log.reindex(columns=(ordered_columns + list(
@@ -237,8 +236,8 @@ class DALSTM_preprocessing ():
         y_train = np.asarray(y_train)
         y_val = np.asarray(y_val)
         y_test = np.asarray(y_test)
-        X_train, X_val, X_test = pad_arrays(X_train, X_val, X_test,
-                                            self.dataset_name)
+        X_train, X_val, X_test = pad_arrays(
+            X_train, X_val, X_test, self.dataset_name)
         # Convert target attribute to days
         y_train /= (24*3600) 
         y_val /= (24*3600) 
@@ -305,8 +304,6 @@ class DALSTM_preprocessing ():
             encoder, X_train, batch_size=emb_batch_size, device=device)
         H_val = extract_prefix_embeddings(
             encoder, X_val,   batch_size=emb_batch_size, device=device)
-        H_test = extract_prefix_embeddings(
-            encoder, X_test,  batch_size=emb_batch_size, device=device)
         # y_weight controls how much the target contributes relative to behavior
         # pca_dim controls how much embedding compression is used before GMM
         # lower y_weight = more behavior-driven clusters
@@ -318,19 +315,20 @@ class DALSTM_preprocessing ():
             reg_covar=1e-6, random_state=0,)
         z_test, p_test, _, _ = train_lstm_and_predict_test_components(
             X_train, X_val, X_test, z_train, z_val, y_test)
-        """
-        z_train, z_val = fit_label_gmm(y_train, y_val)
-        z_test, p_test, _, _ = train_lstm_and_predict_test_components(
-            X_train, X_val, X_test, z_train, z_val, y_test)
-        """
         # get statistics
         num_comp = int(max(z_train.max(), z_val.max()).item()) + 1
-        train_freq = torch.bincount(z_train.view(-1), minlength=num_comp).float() / z_train.numel()
-        val_freq   = torch.bincount(z_val.view(-1),   minlength=num_comp).float() / z_val.numel()
-        test_freq   = torch.bincount(z_test.view(-1),   minlength=num_comp).float() / z_test.numel()
-        train_means = torch.stack([y_train[z_train == c].mean() for c in range(num_comp)])
-        val_means = torch.stack([y_val[z_val == c].mean() for c in range(num_comp)])
-        test_means = torch.stack([y_test[z_test == c].mean() for c in range(num_comp)])
+        train_freq = torch.bincount(
+            z_train.view(-1), minlength=num_comp).float() / z_train.numel()
+        val_freq   = torch.bincount(
+            z_val.view(-1),   minlength=num_comp).float() / z_val.numel()
+        test_freq   = torch.bincount(
+            z_test.view(-1),   minlength=num_comp).float() / z_test.numel()
+        train_means = torch.stack(
+            [y_train[z_train == c].mean() for c in range(num_comp)])
+        val_means = torch.stack(
+            [y_val[z_val == c].mean() for c in range(num_comp)])
+        test_means = torch.stack(
+            [y_test[z_test == c].mean() for c in range(num_comp)])
         print("GMM statistics")
         print("Train- frequency:", train_freq.tolist(), "mean:", train_means)
         print("Val- frequency:", val_freq.tolist(), "mean:", val_means)

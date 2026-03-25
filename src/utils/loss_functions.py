@@ -227,7 +227,6 @@ def discretize_time_targets(y, bin_edges):
     bin_idx = torch.bucketize(y, edges[1:-1], right=False)
     return bin_idx.long()
 
- # TODO: remove the following funcitons if everything works!
 def survival_hazard_nll(logits, y, bin_edges, reduction='mean', eps = 1e-6):
     """
     logits: [B, K] hazard logits
@@ -341,6 +340,7 @@ def pmf_to_quantile(event_probs, bin_edges, q):
     r = right_eff[idx]
     frac = ((q - cdf_prev) / pk).clamp(0.0, 1.0)
     return l + frac * (r - l)
+
 
 def compute_tail_blend_score(results_dict, alpha=0.5, tail_q=0.9):
     y_true = np.asarray(results_dict["GroundTruth"], dtype=np.float64).reshape(-1)

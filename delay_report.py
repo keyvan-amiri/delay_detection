@@ -13,9 +13,7 @@ from sklearn.metrics import f1_score, roc_auc_score, average_precision_score
 from scipy.stats import wilcoxon
 
 
-# =========================
 # Configuration
-# =========================
 GROUND_TRUTH_COL = "GroundTruth"
 PREDICTION_COL = "Prediction"
 CASE_ID_COL = "Case_id"
@@ -31,9 +29,7 @@ PLOT_METRICS = ["recall", "precision", "f1", "prauc"]
 PREFIX_RATIO_COL = "prefix_ratio"
 CASE_LENGTH_COL = "case_length"
 
-# =========================
 # Validation
-# =========================
 def validate_input_dataframe(
     df: pd.DataFrame,
     required_cols=None
@@ -56,9 +52,7 @@ def validate_input_dataframe(
             f"Available columns: {list(df.columns)}"
         )
 
-# =========================
 # Basic confusion counts
-# =========================
 def get_confusion_counts(
     df: pd.DataFrame,
     ground_truth_col: str = GROUND_TRUTH_COL,
@@ -88,10 +82,7 @@ def safe_divide(numerator: float, denominator: float) -> float:
         return np.nan
     return numerator / denominator
 
-
-# =========================
 # Metric functions
-# =========================
 def metric_positive_class_percentage(
     df: pd.DataFrame,
     ground_truth_col: str = GROUND_TRUTH_COL,
@@ -158,7 +149,7 @@ def metric_auroc(
     """
     y_true = df[ground_truth_col].astype(int)
     y_score = df[score_col].astype(float)
-
+    
     # roc_auc_score fails if only one class is present in y_true
     if y_true.nunique() < 2:
         return np.nan
@@ -228,9 +219,7 @@ def get_metric_functions() -> dict:
     }
 
 
-# =========================
 # Evaluation wrappers
-# =========================
 def evaluate_single_dataframe(
     df: pd.DataFrame,
     dataset_name: str,
@@ -405,8 +394,6 @@ def prepare_confusion_latex_table(
 
     # Merge dataset-level positives after pivot
     wide_df = wide_df.merge(positives_df, on="dataset", how="left")
-
-    # Put # Positives right after dataset
     cols = ["dataset", "# Positives"] + [
         c for c in wide_df.columns if c not in ["dataset", "# Positives"]
     ]
@@ -1241,10 +1228,8 @@ def plot_earliness_curves_aggregated(
         plt.savefig(output_path, format="pdf", bbox_inches="tight")
         plt.close()
         
-        
-# =========================
+
 # Main pipeline
-# =========================
 def main():
     model_name = "DALSTM"
     datasets = [

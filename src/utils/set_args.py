@@ -150,8 +150,6 @@ def get_num_component(args):
     if args.IR == 'GMM':
         z_test = torch.load(args.z_test_path, map_location="cpu")  # tensor of ids
         z_test = z_test.view(-1).long()
-        #TODO: remove unnecessary code
-        #z_test = torch.load(args.z_test_path, weights_only=True)
         distinct_labels_tensor, counts = torch.unique(z_test, return_counts=True)
         # sort labels so order is stable
         order = torch.argsort(distinct_labels_tensor)

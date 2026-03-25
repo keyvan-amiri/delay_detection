@@ -36,7 +36,7 @@ class DALSTMModelMve(nn.Module):
                 nn.LSTM(input_dim, hidden_size, batch_first=True)
             )
 
-        # Layer normalization layers (replacing BatchNorm)
+        # Layer normalization layers
         self.layer_norms = nn.ModuleList([
             nn.LayerNorm(hidden_size) for _ in range(n_layers)
         ])
@@ -122,7 +122,7 @@ class DALSTMFDSModelMve(nn.Module):
                 nn.LSTM(input_dim, hidden_size, batch_first=True)
             )
 
-        # Layer normalization layers (replacing BatchNorm)
+        # Layer normalization layers 
         self.layer_norms = nn.ModuleList([
             nn.LayerNorm(hidden_size) for _ in range(n_layers)
         ])

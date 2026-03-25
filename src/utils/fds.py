@@ -1,12 +1,9 @@
-#import logging
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal.windows import triang
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-#print = logging.info
 
 def calibrate_mean_var(
     matrix, m1, v1, m2, v2,
@@ -92,7 +89,6 @@ class FDS(nn.Module):
             kernel_window = list(map(laplace, np.arange(-half_ks, half_ks + 1))) / sum(map(laplace, np.arange(-half_ks, half_ks + 1)))
 
         print(f'Using FDS: [{kernel.upper()}] ({ks}/{sigma})')
-        #return torch.tensor(kernel_window, dtype=torch.float32).cuda()
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         return torch.tensor(kernel_window, dtype=torch.float32, device=device)
 

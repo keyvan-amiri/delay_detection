@@ -46,7 +46,6 @@ def fit_label_gmm(
     def _to_2d_numpy(y: torch.Tensor) -> np.ndarray:
         if not torch.is_tensor(y):
             raise TypeError("y_train/y_val must be torch tensors.")
-        #y_ = y.detach().reshape(-1, 1).to(dtype=torch.float64, device=device).numpy()
         y_ = (y.detach().reshape(-1, 1).to(dtype=torch.float64).cpu().numpy())
         return y_
 
@@ -108,9 +107,8 @@ def fit_label_gmm(
             reg_covar=reg_covar,
             random_state=random_state,
         ).fit(y_all)
-        best_k = 1
         
-    # --- Predict component IDs for train/val separately ---
+    # Predict component IDs for train/val separately 
     z_tr_np = best_gmm.predict(y_tr_np).astype(np.int64)
     z_va_np = best_gmm.predict(y_va_np).astype(np.int64)
 

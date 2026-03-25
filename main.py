@@ -5,8 +5,6 @@ Created on Tue Sep  9 12:25:40 2025
 import os
 import argparse, yaml
 import numpy as np
-#import time, pickle
-# TODO: deactivete filter warnings and solve them as much as possible
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -15,7 +13,7 @@ from src.utils.set_args import add_arguments, get_logger, get_num_component
 from src.utils.import_log import get_event_log
 from src.utils.pipeline import conduct_HPO, train_evaluate_best_model
 from src.utils.pipeline import train_evaluate_soft_gmm
-from src.utils.utils import weighted_metrics, safe_update_results
+from src.utils.utils import safe_update_results
 from src.LSTM.Preprocess_DALSTM import DALSTM_preprocessing
 
 
@@ -30,7 +28,6 @@ def main():
     parser.add_argument('--overwrite', action='store_true', default=False, 
                         help='Repeat preprocessing for an existing dataset')
     parser.add_argument('--num_seeds', type=int, default=5)
-    # TODO: add SMOTE-based approaches if necessary
     parser.add_argument('--IR', type=str, default='Vanilla',
                     choices=['Vanilla', 'CSW', 'EAL', 'BMSE', 'SERA',
                              'quantile', 'GMM', 'survival'],
@@ -53,8 +50,6 @@ def main():
                     help='Blend weight: alpha*MAE_all + (1-alpha)*MAE_tail')
     parser.add_argument('--hpo_tail_q', type=float, default=0.9,
                     help='Quantile threshold for defining tail on validation targets')
-    parser.add_argument('--surv_learn_pi80_hybrid_final', action='store_true',
-                    help='Learn PI80_width threshold on validation and use hybrid final inference.')
     parser.add_argument('--surv_width_grid_size', type=int, default=41,
                     help='Number of candidate thresholds for PI80_width search on validation.')
     parser.add_argument('--log_trans', action='store_true', default=False, 
@@ -78,28 +73,20 @@ def main():
     overall_result_path = os.path.join(args.result_path, overall_result_name) 
     gmm_freq_lst, distinct_labels = get_num_component(args)
     print(gmm_freq_lst, distinct_labels)
-    # ---------------------------------------------------------------------
     # Experiment loop
-    # ---------------------------------------------------------------------
     for exp_id, smooth in zip(exp_ids, smooth_str):
         args = handle_experiment(args, smooth)
         logger = get_logger(args)
-        # ==============================================================
         # GMM path: HPO per expert, final evaluation via soft routing
-        # ==============================================================
         if args.IR == 'GMM':
             best_par_lst = []
-            # ------------------------------
             # HPO once per GMM component
-            # ------------------------------
             seed = args.seeds[0]
             for gmm_label in distinct_labels:
                 best_parameters = conduct_HPO(
                     args, cfg, seed=seed, logger=logger, gmm_label=gmm_label)
                 best_par_lst.append(best_parameters)
-            # ------------------------------
             # Final evaluation by seed
-            # ------------------------------
             mae_lst, many_lst, med_lst, few_lst, sera_lst = [], [], [], [], []
             for seed in args.seeds:
                 (MAE, MAE_many, MAE_med, MAE_few, SERA, _
@@ -117,9 +104,7 @@ def main():
                 'MAE-Med': (np.mean(med_lst), np.std(med_lst)),
                 'MAE-Few': (np.mean(few_lst), np.std(few_lst)),
                 'SERA': (np.mean(sera_lst), np.std(sera_lst)),}
-        # ==============================================================
-        # Non-GMM path: keep the original single-model flow
-        # ==============================================================
+        # Non-GMM path
         else:
             best_par_lst = []
             seed = args.seeds[0]
@@ -140,9 +125,7 @@ def main():
                 'MAE-Med': (np.mean(med_lst), np.std(med_lst)),
                 'MAE-Few': (np.mean(few_lst), np.std(few_lst)),
                 'SERA': (np.mean(sera_lst), np.std(sera_lst)),}
-        # -----------------------------------------------------------------
         # Save results
-        # -----------------------------------------------------------------
         if args.log_trans:
             IR_str = args.IR + '_log'
         elif args.box_cox:

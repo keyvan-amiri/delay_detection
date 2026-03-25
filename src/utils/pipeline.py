@@ -16,9 +16,7 @@ from src.LSTM.model_DALSTM import get_DALSTM_model
 from src.utils.loss_functions import set_loss, compute_tail_blend_score
 from src.LSTM.Train_DALSTM import (
     train_epoch, validate_epoch, train_epoch_survival, validate_epoch_survival,
-    DALSTM_inference, survival_inference_heuristic,
-    survival_collect_dual_predictions, learn_pi80_width_threshold,
-    survival_inference_pi80_hybrid)
+    DALSTM_inference, survival_inference_heuristic)
 from src.LSTM.Preprocess_DALSTM import compute_survival_bin_edges
 from src.utils.utils import add_shots_quantile
 from src.utils.loss_functions import sera_loss
@@ -241,9 +239,7 @@ def train_evaluate_best_model(
         quantiles=(0.1, 0.5, 0.6, 0.9, 0.95, 0.99),
         full_test_for_gmm=True,
         return_results_df=False):
-    ##########################################################################
     # Train
-    ##########################################################################
     start=datetime.now() # get start time (to compute training time)  
     # set device
     device = f'cuda:{os.environ.get("CUDA_VISIBLE_DEVICES", "0")}' if torch.cuda.is_available() else 'cpu'
@@ -393,9 +389,7 @@ def train_evaluate_best_model(
     training_time = (datetime.now()-start).total_seconds()
     if logger is not None:
         logger.info(f'Training time- in seconds: {training_time}')
-    ##########################################################################
     # Inference
-    ##########################################################################
     start=datetime.now() # get start time (to compute inference time)
     if heteroscedastic:
         all_results = {
@@ -414,8 +408,7 @@ def train_evaluate_best_model(
         all_results = {
         'GroundTruth': [], 'Prediction': [], 'Absolute_error': []
         }
-    # If quantile regression, optionally pre-create columns (not required,
-    # because DALSTM_inference adds them if missing — but it's fine either way)
+    # If quantile regression, optionally pre-create columns 
     if quantile_regression:
         for q in quantiles:
             key = f"Q{str(q).replace('.', '_')}"  # e.g. Q0_95
@@ -436,28 +429,10 @@ def train_evaluate_best_model(
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     if survival_model:
-        if args.surv_learn_pi80_hybrid_final:
-            # 1) learn threshold on validation set
-            val_dual_results = survival_collect_dual_predictions(
-                args=args, model=model, inference_loader=val_loader,
-                surv_bin_edges=surv_bin_edges, device=device, meta=meta)
-            learned_thr = learn_pi80_width_threshold(
-                val_dual_results, grid_size=args.surv_width_grid_size)
-            if logger is not None:
-                logger.info(f"Learned PI80 width threshold: {learned_thr}")
-            print(f"Learned PI80 width threshold: {learned_thr}")
-            # 2) apply hybrid routing only at final inference
-            all_results = survival_inference_pi80_hybrid(
-                args=args, model=model, inference_loader=inference_loader,
-                all_results=all_results, surv_bin_edges=surv_bin_edges,
-                pi80_width_threshold=learned_thr,
-                test_cases=test_cases, test_lengths=test_lengths,
-                val_mode=val_mode, device=device, meta=meta)
-        else:
-            all_results = survival_inference_heuristic(
-                args, model, inference_loader, all_results, surv_bin_edges,
-                test_cases, test_lengths, val_mode=val_mode, device=device,
-                meta=meta)
+        all_results = survival_inference_heuristic(
+            args, model, inference_loader, all_results, surv_bin_edges,
+            test_cases, test_lengths, val_mode=val_mode, device=device,
+            meta=meta)
     else:
         all_results = DALSTM_inference(
             args, model, checkpoint, inference_loader, all_results,
@@ -518,19 +493,12 @@ def train_evaluate_soft_gmm(
     Returns:
         MAE, MAE_many, MAE_med, MAE_few, SERA, results_df
     """
-    # ---------------------------------------------------------------------
-    # Load router probabilities for test set
-    # Shape expected: [N_test, K]
-    # ---------------------------------------------------------------------
+    # Load router probabilities for test set Shape expected: [N_test, K]
     p_test = torch.load(args.p_test_path, weights_only=True).float()
-
     pred_cols = []
     base_df = None
     relevance_test = None
-
-    # ---------------------------------------------------------------------
     # Run each expert on the full test set
-    # ---------------------------------------------------------------------
     for best_params, gmm_label in zip(best_param_list, distinct_labels):
         results_df, rel_test = train_evaluate_best_model(
             args=args,
@@ -548,7 +516,6 @@ def train_evaluate_soft_gmm(
             base_df = results_df.copy()
             relevance_test = rel_test
         else:
-            # Strong safety check: all experts must predict in the same test order
             same_gt = np.array_equal(
                 base_df["GroundTruth"].values,
                 results_df["GroundTruth"].values
@@ -571,10 +538,7 @@ def train_evaluate_soft_gmm(
         )
 
     pred_matrix = torch.stack(pred_cols, dim=1)   # [N_test, K]
-
-    # ---------------------------------------------------------------------
     # Safety checks on probability matrix
-    # ---------------------------------------------------------------------
     if p_test.ndim != 2:
         raise ValueError(f"p_test must be 2D, got shape {tuple(p_test.shape)}")
 
@@ -587,51 +551,34 @@ def train_evaluate_soft_gmm(
     # Renormalize in case of tiny numerical drift
     row_sums = p_test.sum(dim=1, keepdim=True).clamp_min(1e-12)
     p_test = p_test / row_sums
-
-    # ---------------------------------------------------------------------
     # Soft mixture of experts: y_hat = sum_k p(k|x) * y_hat_k(x)
-    # ---------------------------------------------------------------------
     y_pred_soft = (p_test * pred_matrix).sum(dim=1).cpu().numpy()
-
-    # ---------------------------------------------------------------------
     # Build final result dataframe
-    # ---------------------------------------------------------------------
     results_df = base_df.copy()
     results_df["Prediction"] = y_pred_soft
     results_df["Absolute_error"] = np.abs(
         results_df["GroundTruth"].values - results_df["Prediction"].values
     )
-
     # Save final soft-routed predictions
     soft_name = f"{args.model_name}soft_gmm_seed{seed}.csv"
     soft_path = os.path.join(args.result_path, soft_name)
     results_df.to_csv(soft_path, index=False)
-
     if logger is not None:
         logger.info(f"Saved soft-GMM predictions to {soft_path}")
-
-    # ---------------------------------------------------------------------
     # Metrics
-    # ---------------------------------------------------------------------
     MAE = results_df["Absolute_error"].mean()
-
     df = add_shots_quantile(results_df)
     df_many = df[df["many"] == 1]
     df_med  = df[df["med"] == 1]
     df_few  = df[df["few"] == 1]
-
     MAE_many = df_many["Absolute_error"].mean()
     MAE_med  = df_med["Absolute_error"].mean()
     MAE_few  = df_few["Absolute_error"].mean()
-
     preds = torch.tensor(df["Prediction"].values, dtype=torch.float32)
     trues = torch.tensor(df["GroundTruth"].values, dtype=torch.float32)
     phi   = torch.tensor(relevance_test, dtype=torch.float32)
-
     preds = preds.to("cpu")
     trues = trues.to("cpu")
     phi   = phi.to("cpu")
-
     SERA = sera_loss(preds, trues, phi)
-
     return (MAE, MAE_many, MAE_med, MAE_few, SERA, results_df)

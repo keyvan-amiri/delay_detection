@@ -6,12 +6,19 @@ import os, time, pickle
 import pandas as pd
 import numpy as np
 
+def expand_case_ids(log, log_ids):
+    df = log.copy()
+    grouped = df.groupby(log_ids.case, sort=False)
+    cid_lst = [cid for cid, g in grouped for _ in range(len(g) - 1)]
+    #print('length of collected ids:', len(cid_lst))
+    return cid_lst
+
 def safe_update_results(results_path, key, value, timeout=600):
     from filelock import FileLock
     lock_path = results_path + ".lock"
     tmp_path = f"{results_path}.{os.getpid()}.{int(time.time()*1000)}.tmp"
     with FileLock(lock_path, timeout=timeout):
-        # reload latest from disk (THIS is what prevents lost updates)
+        # reload latest from disk 
         if os.path.exists(results_path):
             with open(results_path, "rb") as f:
                 results = pickle.load(f)
@@ -33,9 +40,7 @@ def add_shots_quantile(
 ):
     """
     Quantile-based grouping for regression targets.
-
     Groups samples into many / med / few using quantiles.
-
     Parameters
     ----------
     df_inp : pandas DataFrame
@@ -58,7 +63,6 @@ def add_shots_quantile(
 
     if many_frac <= 0 or med_frac < 0 or many_frac + med_frac >= 1:
         raise ValueError("Require: many_frac > 0, med_frac >= 0, and many_frac + med_frac < 1.")
-
     if tail not in {"high", "low", "both"}:
         raise ValueError("tail must be one of: 'high', 'low', 'both'")
 
@@ -69,41 +73,33 @@ def add_shots_quantile(
 
     df[["many", "med", "few"]] = 0
 
-    # ---------- ONE-SIDED: HIGH ----------
+    # ONE-SIDED: HIGH 
     if tail == "high":
         q_many = y.quantile(many_frac)
         q_med  = y.quantile(many_frac + med_frac)
-
         df.loc[y <= q_many, "many"] = 1
         df.loc[(y > q_many) & (y <= q_med), "med"] = 1
         df.loc[y > q_med, "few"] = 1
-
-    # ---------- ONE-SIDED: LOW ----------
+    # ONE-SIDED: LOW 
     elif tail == "low":
         q_few = y.quantile(few_frac)
         q_med = y.quantile(few_frac + med_frac)
-
         df.loc[y <= q_few, "few"] = 1
         df.loc[(y > q_few) & (y <= q_med), "med"] = 1
         df.loc[y > q_med, "many"] = 1
-
-    # ---------- TWO-SIDED ----------
+    # TWO-SIDED 
     else:  # both
         q1 = few_frac / 2
         q2 = q1 + med_frac / 2
         q3 = 1 - q2
         q4 = 1 - q1
-
         b1, b2, b3, b4 = y.quantile([q1, q2, q3, q4]).to_list()
-
         few_mask  = (y <= b1) | (y >= b4)
         many_mask = (y > b2) & (y < b3)
         med_mask  = ~(few_mask | many_mask)
-
         df.loc[few_mask, "few"] = 1
         df.loc[many_mask, "many"] = 1
         df.loc[med_mask, "med"] = 1
-
     return df
 
 
@@ -159,10 +155,8 @@ def results_to_dataframe(results_dict):
             'SERA_mean': data['performance']['SERA'][0],
             'SERA_std': data['performance']['SERA'][1]
         }
-        rows.append(row)
-    
+        rows.append(row)    
     return pd.DataFrame(rows)
-
 
 
 def weighted_metrics(metric_lst, gmm_freq_lst):
@@ -176,8 +170,3 @@ def weighted_metrics(metric_lst, gmm_freq_lst):
 
         out[k] = (np.sum(w * means), np.sum(w * stds))  # weighted mean, weighted std (as you stored it)
     return out
-
-
-    
-
-

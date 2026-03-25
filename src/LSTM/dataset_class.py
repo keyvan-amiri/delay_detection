@@ -31,7 +31,7 @@ class DALSTM_dataset(Dataset):
             w *= len(w) / w.sum()
             self.weights = w
         else:
-            # FIRST handle the case where args was not provided (common for test_dataset)
+            # FIRST handle the case where args was not provided
             if args is None or getattr(args, "reweight", None) is None:
                 # default / BMSE-like branch: no weighting
                 n = int(self.y.shape[0])
@@ -72,7 +72,7 @@ class DALSTM_dataset(Dataset):
         if reweight == "none":
             w = np.ones_like(y, dtype=np.float32)
             return w, None, None
-        # ----- define bins -----
+        # define bins
         y_min, y_max = float(y.min()), float(y.max())
         if binning == "quantile":
             # quantile edges; unique to avoid duplicates if many ties
@@ -88,20 +88,20 @@ class DALSTM_dataset(Dataset):
             raise ValueError("binning must be 'quantile' or 'uniform'")
         # digitize into [0..n_bins-1]
         bin_idx = np.digitize(y, edges[1:-1], right=False)
-        # ----- counts per bin -----
+        # counts per bin
         n_bins_eff = len(edges) - 1
         bin_idx = np.clip(bin_idx, 0, n_bins_eff - 1)
         counts = np.bincount(bin_idx, minlength=n_bins_eff).astype(np.float32)
         # avoid zero counts (can happen with weird edges); keep them as 1 for stability
         counts = np.clip(counts, 1.0, None)
-        # ----- LDS on counts (correct order) -----
+        # LDS on counts (correct order)
         if lds:
             kernel = get_lds_kernel_window(lds_kernel, lds_ks, lds_sigma)
             counts_smooth = convolve1d(counts, weights=kernel, mode='constant')
             counts_smooth = np.clip(counts_smooth, 1e-6, None)
         else:
             counts_smooth = counts
-        # ----- reweighting from (smoothed) counts -----
+        # reweighting from (smoothed) counts
         if reweight == "inverse":
             denom = counts_smooth
         else:  # sqrt_inv

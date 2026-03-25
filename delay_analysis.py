@@ -13,7 +13,6 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import GroupKFold, ParameterGrid
 from catboost import CatBoostClassifier
-#from sklearn.linear_model import LogisticRegression
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -34,7 +33,6 @@ def set_all_seeds(seed):
     torch.backends.cudnn.benchmark = False
     
 def format_quantile_for_name(quantile):
-    #Convert quantile to a filename-safe string.
     q_str = str(quantile).replace(".", "p")
     return f"q{q_str}"    
     
@@ -145,16 +143,16 @@ def get_delayed_cases(train_cases, val_cases, test_cases,
     df_train = pd.DataFrame({"Case_id": train_cases, "GT": y_train})
     df_val = pd.DataFrame({"Case_id": val_cases, "GT": y_val})
     df_test = pd.DataFrame({"Case_id": test_cases, "GT": y_test})
-    # ----- Compute threshold using train + validation -----
+    # Compute threshold using train + validation
     df_tv = pd.concat([df_train, df_val], ignore_index=True)
     df_tv = df_tv.groupby("Case_id").first()
     true_total_tv = df_tv["GT"].astype(float)
     tau = float(true_total_tv.quantile(quantile))
-    # ----- Get total duration for all cases -----
+    # Get total duration for all cases
     df_all = pd.concat([df_train, df_val, df_test], ignore_index=True)
     df_all = df_all.groupby("Case_id").first()
     true_total_all = df_all["GT"].astype(float)
-    # ----- Create delayed dictionary -----
+    # Create delayed dictionary
     delayed_dict = (true_total_all > tau).astype(int).to_dict()
     return tau, delayed_dict
 
@@ -250,7 +248,7 @@ def train_dalstm_classifier(
             X_batch = X_batch.to(device).float()
             y_batch = y_batch.to(device).float()
             optimizer.zero_grad()
-            logits = model(X_batch)              # shape: [batch]
+            logits = model(X_batch)  # shape: [batch]
             loss = criterion(logits, y_batch)
             loss.backward()
             optimizer.step()
@@ -608,7 +606,6 @@ def inference_with_survival(
     test_df = pd.DataFrame(all_results_test)
     cols = ['Case_id', 'Prefix_length'] + [c for c in test_df.columns if c not in ['Case_id', 'Prefix_length']]
     test_df = test_df[cols]
-    # adjust columns
     train_val_df = train_val_df.sort_values(["Case_id", "Prefix_length"]).copy()
     train_val_df["Elapsed_time"] = (
         train_val_df.groupby("Case_id")["GroundTruth"].transform("first") - train_val_df["GroundTruth"])

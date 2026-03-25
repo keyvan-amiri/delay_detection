@@ -166,7 +166,7 @@ def apply_boxcox_transform(y_train, y_val, y_test, eps=1e-6):
     y_train = y_train.float()
     y_val   = y_val.float()
     y_test  = y_test.float()
-    # --- fit on train+val only ---
+    # fit on train+val only 
     y_fit = torch.cat([y_train, y_val], dim=0)
     y_fit_np = y_fit.detach().cpu().numpy().reshape(-1)
     # shift to make strictly positive
@@ -177,7 +177,7 @@ def apply_boxcox_transform(y_train, y_val, y_test, eps=1e-6):
     y_fit_pos = y_fit_np + shift
     # estimate lambda
     _, lam = stats.boxcox(y_fit_pos)
-    # --- define transform ---
+    # define transform 
     def boxcox_torch(y, lam, shift):
         y_pos = y + shift
         if abs(lam) < 1e-8:
