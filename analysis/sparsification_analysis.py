@@ -153,9 +153,11 @@ def sparsification_analysis_pdf(
     plt.plot(fracs, curve_unc, label="Uncertainty-based", linewidth=2)
     plt.plot(fracs, curve_oracle, label="Oracle", linestyle="--")
     plt.plot(fracs, curve_rand, label="Random", linestyle=":")
-    plt.xlabel("Fraction removed")
-    plt.ylabel("Mean normalized error (remaining)")
-    plt.title(f"{dataset}: Normalized Sparsification Curve")
+    plt.xlabel("Fraction removed", fontsize=18, fontweight="bold")
+    plt.ylabel("Mean normalized error", fontsize=18, fontweight="bold")
+    plt.xticks(fontsize=16, fontweight="bold")
+    plt.yticks(fontsize=16, fontweight="bold")
+    #plt.title(f"{dataset}: Normalized Sparsification Curve")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -165,9 +167,11 @@ def sparsification_analysis_pdf(
     plt.figure(figsize=(7, 5))
     plt.plot(fracs, sparsification_error, linewidth=2)
     plt.fill_between(fracs, 0, sparsification_error, alpha=0.25)
-    plt.xlabel("Fraction removed")
-    plt.ylabel("Normalized sparsification error")
-    plt.title(f"{dataset}: Normalized Sparsification Error\nnAUSE={nAUSE:.4f}  nAURG={nAURG:.4f}")
+    plt.xlabel("Fraction removed", fontsize=18, fontweight="bold")
+    plt.ylabel("Mean normalized error (remaining)", fontsize=18, fontweight="bold")
+    plt.xticks(fontsize=16, fontweight="bold")
+    plt.yticks(fontsize=16, fontweight="bold")
+    #plt.title(f"{dataset}: Normalized Sparsification Error\nnAUSE={nAUSE:.4f}  nAURG={nAURG:.4f}")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(plot_prefix + "_error.pdf")
@@ -186,6 +190,64 @@ def sparsification_analysis_pdf(
         "n_instances": int(N),
     }
 
+def save_sparsification_latex_table(
+    summary_df: pd.DataFrame,
+    out_path: str = "sparsification_table.txt",
+    caption: str = "Normalized sparsification results (AUSE/AURG)",
+    label: str = "tab:sparsification_results",
+    decimals: int = 3,
+) -> str:
+    """
+    Creates a large, readable LaTeX table (one row per dataset).
+    Designed for appendix (larger font, more spacing).
+    """
+
+    import re
+
+    def esc(s: str) -> str:
+        s = str(s)
+        s = s.replace("\\", r"\textbackslash{}")
+        s = re.sub(r"([&_#%${}])", r"\\\1", s)
+        s = s.replace("^", r"\^{}").replace("~", r"\~{}")
+        return s
+
+    def fmt(x):
+        if pd.isna(x):
+            return "--"
+        return f"{float(x):.{decimals}f}"
+
+    lines = []
+    lines += [r"\begin{table}[htbp]"]
+    lines += [r"    \centering"]
+    lines += [f"    \\caption{{{esc(caption)}}}"]
+    lines += [r"    \setlength{\tabcolsep}{6pt}"]
+    lines += [r"    \renewcommand{\arraystretch}{1.4}"]
+    lines += [r"    \normalsize"]   # <-- larger font (important)
+    lines += [r"    \begin{tabular}{lccc}"]
+    lines += [r"        \toprule"]
+    lines += [r"        Dataset & nAUSE $\downarrow$ & nAURG $\uparrow$ & nAURG ratio $\uparrow$ \\"]
+    lines += [r"        \midrule"]
+
+    for row in summary_df.itertuples(index=False):
+        lines += [
+            f"        {esc(row.dataset)} & "
+            f"{fmt(row.nAUSE)} & "
+            f"{fmt(row.nAURG)} & "
+            f"{fmt(row.nAURG_ratio)} \\\\"
+        ]
+
+    lines += [r"        \bottomrule"]
+    lines += [r"    \end{tabular}"]
+    lines += [f"    \\label{{{esc(label)}}}"]
+    lines += [r"\end{table}"]
+
+    latex_str = "\n".join(lines)
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(latex_str)
+
+    return latex_str
+
 
 def main():
     # ---- settings ----
@@ -196,19 +258,6 @@ def main():
         "BPIC15_1",
         "BPIC15_2",
         "BPIC15_3",
-        "BPIC15_4",
-        "BPIC15_5",
-        "HelpDesk",
-        "Sepsis",
-        "BPIC20ID",
-        "BPIC20DD",
-        "BPIC20PTC",
-        "BPIC20TPD",
-        "BPIC20RFP",
-    ] 
-    datasets = [
-        "P2P",
-        "BPIC15_2",
         "BPIC15_4",
         "BPIC15_5",
         "HelpDesk",
@@ -276,6 +325,13 @@ def main():
     print("\nNormalized sparsification summary:")
     print(summary_df)
     print(f"\nSaved summary to: {save_path}")
+    
+    save_sparsification_latex_table(
+    summary_df,
+    out_path=os.path.join(result_path, "sparsification_table.txt"),
+    caption="Normalized sparsification metrics across datasets.",
+    label="tab:sparsification",
+    )
 
 
 if __name__ == "__main__":

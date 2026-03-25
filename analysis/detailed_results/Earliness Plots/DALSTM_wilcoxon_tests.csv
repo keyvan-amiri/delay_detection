@@ -1,0 +1,5 @@
+metric,approach_a,approach_b,n_pairs,mean_Classification,mean_Survival,mean_diff_Survival_minus_Classification,wins_Survival,wins_Classification,ties,wilcoxon_stat,p_value,significant_0.05
+recall,Classification,Survival,13,0.09959946989031952,0.5518336030884209,0.45223413319810146,13,0,0,0.0,0.000244140625,True
+precision,Classification,Survival,13,0.2556967376495053,0.2925233718541541,0.03682663420464883,9,3,1,24.0,0.26611328125,False
+f1,Classification,Survival,14,0.09592886911380627,0.3054862858867395,0.20955741677293327,12,1,1,1.0,0.0018714329102470324,True
+prauc,Classification,Survival,13,0.13141927331651782,0.2218552205938228,0.09043594727730495,12,1,0,2.0,0.000732421875,True

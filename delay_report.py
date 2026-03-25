@@ -1161,9 +1161,12 @@ def plot_earliness_curves_for_dataset(
                 label=approach,
             )
 
-        plt.xlabel("Prefix length / case length")
-        plt.ylabel(metric_display_name(metric))
-        plt.title(f"{dataset_name} - {metric_display_name(metric)}")
+        plt.xlabel("Prefix length / case length", fontsize=18, fontweight="bold")
+        plt.ylabel(metric_display_name(metric), fontsize=18, fontweight="bold")
+        plt.xticks(fontsize=16, fontweight="bold")
+        plt.yticks(fontsize=16, fontweight="bold")
+        
+        #plt.title(f"{dataset_name} - {metric_display_name(metric)}")
         plt.xticks(EARLINESS_THRESHOLDS, [str(x) for x in EARLINESS_THRESHOLDS])
         plt.ylim(0, 1)
         plt.grid(True, alpha=0.3)
@@ -1219,9 +1222,12 @@ def plot_earliness_curves_aggregated(
                 label=approach,
             )
 
-        plt.xlabel("Prefix length / case length")
-        plt.ylabel(metric_display_name(metric))
-        plt.title(f"Average across datasets - {metric_display_name(metric)}")
+        plt.xlabel("Prefix length / case length", fontsize=18, fontweight="bold")
+        plt.ylabel(metric_display_name(metric), fontsize=18, fontweight="bold")
+        plt.xticks(fontsize=16, fontweight="bold")
+        plt.yticks(fontsize=16, fontweight="bold")
+        
+        #plt.title(f"Average across datasets - {metric_display_name(metric)}")
         plt.xticks(EARLINESS_THRESHOLDS, [str(x) for x in EARLINESS_THRESHOLDS])
         plt.ylim(0, 1)
         plt.grid(True, alpha=0.3)

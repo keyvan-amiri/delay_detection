@@ -577,6 +577,88 @@ def save_stats_summary_latex_table_compact(
         f.write(latex)
     return latex
 
+def save_nemenyi_pvals_latex_table(
+    pvals_df: pd.DataFrame,
+    out_path: str,
+    caption: str = "Nemenyi post-hoc p-values",
+    label: str = "tab:nemenyi_pvals",
+    decimals: int = 3,
+    math_mode: bool = True,
+) -> str:
+    """
+    Save a pairwise Nemenyi p-value matrix as a LaTeX table.
+
+    Parameters
+    ----------
+    pvals_df : pd.DataFrame
+        Square DataFrame of pairwise p-values, indexed and columned by approach name.
+    out_path : str
+        Output .txt or .tex file path.
+    caption : str
+        LaTeX caption.
+    label : str
+        LaTeX label.
+    decimals : int
+        Number of decimals for p-values.
+    math_mode : bool
+        If True, format values in math mode.
+    """
+
+    def esc(s: str) -> str:
+        s = str(s)
+        s = s.replace("\\", r"\textbackslash{}")
+        s = re.sub(r"([&_#%${}])", r"\\\1", s)
+        s = s.replace("^", r"\^{}").replace("~", r"\~{}")
+        return s
+
+    def fmt_p(p: float) -> str:
+        if pd.isna(p):
+            cell = "--"
+        else:
+            thr = 10 ** (-decimals)
+            if p < thr:
+                cell = f"<{thr:.{decimals}f}"
+            else:
+                cell = f"{p:.{decimals}f}"
+        return f"${cell}$" if math_mode and cell != "--" else cell
+
+    approaches = list(pvals_df.index)
+    n = len(approaches)
+
+    # column format: one left column + n numeric columns
+    col_spec = "l" + "r" * n
+
+    lines = []
+    lines += [r"\begin{table}[htbp]"]
+    lines += [r"    \centering"]
+    lines += [f"    \\caption{{{esc(caption)}}}"]
+    lines += [r"    \setlength{\tabcolsep}{4pt}"]
+    lines += [r"    \renewcommand{\arraystretch}{1.2}"]
+    lines += [r"    \scriptsize"]
+    lines += [rf"    \begin{{tabular}}{{{col_spec}}}"]
+    lines += [r"        \toprule"]
+
+    header = "Approach & " + " & ".join(esc(a) for a in approaches) + r" \\"
+    lines += [f"        {header}"]
+    lines += [r"        \midrule"]
+
+    for row_name in approaches:
+        row_vals = [fmt_p(float(pvals_df.loc[row_name, col_name])) for col_name in approaches]
+        row_str = esc(row_name) + " & " + " & ".join(row_vals) + r" \\"
+        lines += [f"        {row_str}"]
+
+    lines += [r"        \bottomrule"]
+    lines += [r"    \end{tabular}"]
+    lines += [f"    \\label{{{esc(label)}}}"]
+    lines += [r"\end{table}"]
+
+    latex_str = "\n".join(lines)
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(latex_str)
+
+    return latex_str
+
 def main():
     # ---- settings ----
     model_name = "DALSTM"
@@ -643,6 +725,34 @@ def main():
     
     stats_by_mode = {"all": out_all, "many": out_many, "medium": out_medium, "few": out_few}
     save_stats_summary_latex_table_compact(stats_by_mode, out_path="stats_summary.txt")
+    
+    save_nemenyi_pvals_latex_table(
+    out_all["nemenyi_pvals"],
+    out_path="nemenyi_all.txt",
+    caption="Pairwise Nemenyi post-hoc p-values for DALSTM (All).",
+    label="tab:nemenyi_all",
+    )
+
+    save_nemenyi_pvals_latex_table(
+    out_many["nemenyi_pvals"],
+    out_path="nemenyi_many.txt",
+    caption="Pairwise Nemenyi post-hoc p-values for DALSTM (Many).",
+    label="tab:nemenyi_many",
+    )
+
+    save_nemenyi_pvals_latex_table(
+    out_medium["nemenyi_pvals"],
+    out_path="nemenyi_medium.txt",
+    caption="Pairwise Nemenyi post-hoc p-values for DALSTM (Medium).",
+    label="tab:nemenyi_medium",
+    )
+
+    save_nemenyi_pvals_latex_table(
+    out_few["nemenyi_pvals"],
+    out_path="nemenyi_few.txt",
+    caption="Pairwise Nemenyi post-hoc p-values for DALSTM (Few).",
+    label="tab:nemenyi_few",
+    )
 
 
 if __name__ == "__main__":
